@@ -1,0 +1,1158 @@
+Sub accountlevel()
+    Dim ie As Object
+    Dim ws As Worksheet
+    Dim r As Long
+    Dim accountNumber As String
+    Dim detailsframe As Object
+    Dim allFrames As Object
+    Dim contentFrame As Object
+    Dim submitButton As Object
+    Dim retryCount As Integer
+    Dim i As Integer
+    Dim frameName As String
+    Dim change_status As String
+    Dim branch_code As String
+    Dim startTime As Date
+    Dim endTime As Date
+    Dim currentSatus As String
+    Dim currentBranch As String
+    ' Try to attach to an existing Edge IE mode instance by title
+    frameName = "Unit Trust System"
+    Set ie = GetEdgeIeDOM(frameName)
+    
+    ' Check if the instance was found
+    If ie Is Nothing Then
+        Debug.Print "No existing IE instance found. Exiting sub."
+        Exit Sub
+    End If
+    
+    ' Make the window visible (for debugging purposes)
+    ' Note: Edge in IE mode might not support .Visible directly.
+    ' ie.Visible = True ' Uncomment if .Visible is supported
+    
+    ' Wait for IE to fully load the page
+    'Do While ie.Busy Or ie.readyState <> 4
+     '   DoEvents
+    'Loop
+    
+    ' Reference to the first worksheet
+    Set ws = ThisWorkbook.Sheets(2)
+    
+    ' Find the first row to process (from column 5 being empty)
+    r = 5 ' Start from row 4
+    
+    ' Loop through rows in column 2 and check the status in column 5
+    Do While ws.Cells(r, 2).Value <> ""
+        accountNumber = ws.Cells(r, 2).Value
+        change_status = ws.Cells(r, 3).Value
+        branch_code = ws.Cells(r, 4).Value
+        startTime = Now
+        ws.Cells(r, 6).Value = startTime
+        If accountNumber = "" Then Exit Do  ' Exit if no more CIF numbers (empty cell in column 2)
+        
+        ' Check if row hasn't been processed yet (column 5 is empty)
+        If ws.Cells(r, 5).Value = "" Then
+            
+            ' Wait for the page to load
+            Application.Wait Now + TimeSerial(0, 0, 3)
+            
+            ' Try to fetch frames manually by tag name (with retries)
+            retryCount = 0
+            Do While retryCount < 3
+                Set allFrames = ie.getElementsByTagName("frame")
+                Debug.Print "Number of frames found: " & allFrames.Length
+                
+                If allFrames.Length > 1 Then
+                    Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                    If Not contentFrame Is Nothing Then
+                        Debug.Print "Content frame src: " & contentFrame.src
+                        Exit Do
+                    End If
+                End If
+                
+                retryCount = retryCount + 1
+                Application.Wait Now + TimeSerial(0, 0, 2)
+            Loop
+            
+            If contentFrame Is Nothing Then
+                Debug.Print "Content frame not found after retries. Exiting sub."
+                Exit Sub
+            End If
+            
+            ' Process elements in the content frame
+            'Do While contentFrame.contentWindow.readyState <> "complete"
+             '   DoEvents
+            'Loop
+            Set contentdoc = contentFrame.contentWindow.document
+            Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+            ' Access the "details" frame inside the content frame
+            Set detailsframe = innerframe(0)
+            Set detailsDoc = detailsframe.contentWindow.document
+            If detailsframe Is Nothing Then
+                Debug.Print "Details frame not found."
+                Exit Sub
+            End If
+            
+            ' Set CIF number and submit
+            detailsDoc.getElementById("SEARCH_TEXT").Value = accountNumber
+            Set submitButton = detailsDoc.getElementsByClassName("td_search_btn")(0)
+            Set goBtn = submitButton.getElementsByClassName("btn toggleButton")(0)
+            goBtn.Click
+            Application.Wait Now + TimeSerial(0, 0, 3)
+            
+            ' Try to fetch frames manually by tag name (with retries)
+            retryCount = 0
+            Do While retryCount < 3
+                Set allFrames = ie.getElementsByTagName("frame")
+                Debug.Print "Number of frames found: " & allFrames.Length
+                
+                If allFrames.Length > 1 Then
+                    Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                    If Not contentFrame Is Nothing Then
+                        Debug.Print "Content frame src: " & contentFrame.src
+                        Exit Do
+                    End If
+                End If
+                
+                retryCount = retryCount + 1
+                Application.Wait Now + TimeSerial(0, 0, 2)
+            Loop
+            
+            If contentFrame Is Nothing Then
+                Debug.Print "Content frame not found after retries. Exiting sub."
+                Exit Sub
+            End If
+            
+            ' Process elements in the content frame
+            'Do While contentFrame.contentWindow.readyState <> "complete"
+             '   DoEvents
+            'Loop
+            Set contentdoc = contentFrame.contentWindow.document
+            Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+            ' Access the "details" frame inside the content frame
+            Set detailsframe = innerframe(0)
+            Set detailsDoc = detailsframe.contentWindow.document
+            If detailsframe Is Nothing Then
+                Debug.Print "Details frame not found."
+                Exit Sub
+            End If
+            Dim acclink As Object
+            Dim startTimer As Single
+            Dim timeout As Single
+            Dim errorFlag As Boolean
+            
+            timeout = 5 ' in seconds
+            startTimer = Timer ' record the current time
+            
+            Do
+                ' Try to set detailsframe and detailsDoc with error handling
+                On Error Resume Next
+                Set detailsframe = innerframe(0)
+                If Err.Number <> 0 Then
+                    Debug.Print "Error accessing innerframe(0)."
+                    errorFlag = True
+                    Exit Do
+                End If
+                Set detailsDoc = detailsframe.contentWindow.document
+                If Err.Number <> 0 Then
+                    Debug.Print "Error accessing detailsframe document."
+                    errorFlag = True
+                    Exit Do
+                End If
+                On Error GoTo 0 ' Turn off error handling
+            
+                ' Check if detailsframe or detailsDoc were set correctly
+                If detailsframe Is Nothing Or detailsDoc Is Nothing Then
+                    Debug.Print "Details frame or document not set properly."
+                    Exit Sub
+                End If
+            
+                ' Try to find the acclink element with error handling
+                On Error Resume Next
+                Set acclink = detailsDoc.getElementById("SPAN_ACCOUNT_LIST_ACA_AC_NO_0")
+                errorFlag = (Err.Number <> 0) ' Check if an error occurred with acclink
+                On Error GoTo 0 ' Turn off error handling
+            
+                ' If acclink was found or no error occurred
+                If Not acclink Is Nothing And Not errorFlag Then
+                    Exit Do ' exit the loop if found
+                End If
+            
+                ' Wait a moment before trying again to avoid excessive looping
+                Application.Wait Now + TimeSerial(0, 0, 1) ' waits 1 second
+            
+                ' Check if the timeout has been reached
+                If Timer - startTimer >= timeout Then
+                    Debug.Print "Timeout reached. 'acclink' element not found."
+                    Exit Do
+                End If
+            Loop
+            
+            ' Proceed to the next process if acclink was not found or after it was clicked
+            If acclink Is Nothing Or errorFlag Then
+                ws.Cells(r, 5).Value = "Error"
+                SendKeys "{ENTER}"
+                GoTo nextLoop
+            Else
+                acclink.Click
+                Debug.Print "Account is Valid"
+            End If
+
+            ' Wait for the submission to complete
+            Application.Wait Now + TimeSerial(0, 0, 3)
+            ' REFRESH FRAME
+            ' Try to fetch frames manually by tag name (with retries)
+            retryCount = 0
+            Do While retryCount < 3
+                Set allFrames = ie.getElementsByTagName("frame")
+                Debug.Print "Number of frames found: " & allFrames.Length
+                
+                If allFrames.Length > 1 Then
+                    Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                    If Not contentFrame Is Nothing Then
+                        Debug.Print "Content frame src: " & contentFrame.src
+                        Exit Do
+                    End If
+                End If
+                
+                retryCount = retryCount + 1
+                Application.Wait Now + TimeSerial(0, 0, 2)
+            Loop
+            
+            If contentFrame Is Nothing Then
+                Debug.Print "Content frame not found after retries. Exiting sub."
+                Exit Sub
+            End If
+            
+            ' Process elements in the content frame
+            'Do While contentFrame.contentWindow.readyState <> "complete"
+             '   DoEvents
+            'Loop
+            Set contentdoc = contentFrame.contentWindow.document
+            Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+            ' Access the "details" frame inside the content frame
+            Set detailsframe = innerframe(0)
+            Set detailsDoc = detailsframe.contentWindow.document
+            If detailsframe Is Nothing Then
+                Debug.Print "Details frame not found."
+                Exit Sub
+            End If
+            'CHANGE STATUS
+            ' Check if detailsDoc is loaded
+            If Not detailsDoc Is Nothing Then
+                ' Access the "dummy" div within detailsDoc
+                Dim divdummy As Object
+                Dim statusElement As Object
+                Dim branchElement As Object
+            
+                Set divdummy = detailsDoc.getElementById("dummy")
+            
+                If Not divdummy Is Nothing Then ' Check if divdummy exists
+                    ' Retrieve status and branch elements within divdummy
+                    Set statusElement = divdummy.querySelector("#SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE")
+                    Set branchElement = divdummy.querySelector("#SPAN_ACCOUNT_DETAIL_GEN_BRCH_CODE")
+                    
+                    ' Ensure both elements are found before comparing
+                    If Not statusElement Is Nothing And Not branchElement Is Nothing Then
+                        ' Trim and convert both currentStatus and change_status to uppercase
+                        currentStatus = UCase(Trim(statusElement.innertext))
+                        change_status = UCase(Trim(change_status))
+                        
+                        ' Trim and convert both currentBranch and branch_code to uppercase
+                        currentBranch = UCase(Trim(branchElement.innertext))
+                        branch_code = UCase(Trim(branch_code))
+                        
+                        Debug.Print "Comparing values after trim and uppercase adjustments:"
+                        Debug.Print "currentStatus: " & currentStatus & ", Expected change_status: " & change_status
+                        Debug.Print "currentBranch: " & currentBranch & ", Expected branch_code: " & branch_code
+                        
+                        ' Compare current values with expected values
+                        If currentStatus = change_status And currentBranch = branch_code Then
+                            ' All values match; go to the next iteration
+                            GoTo nextLoop
+                        Else
+                            ' Values differ; log mismatches
+                            Debug.Print "Mismatch found; continuing the process."
+                            
+                            If currentStatus <> change_status Then
+                                Debug.Print "Status mismatch. Expected: " & change_status & ", Found: " & currentStatus
+                            End If
+                            If currentBranch <> branch_code Then
+                                Debug.Print "Branch code mismatch. Expected: " & branch_code & ", Found: " & currentBranch
+                            End If
+                        End If
+                    Else
+                        Debug.Print "One or more required elements not found in 'dummy' div."
+                        MsgBox "Error: Required elements not found.", vbCritical
+                    End If
+                Else
+                    Debug.Print "Div 'dummy' not found in detailsDoc."
+                    MsgBox "Error: Div 'dummy' not found in detailsDoc.", vbCritical
+                End If
+            Else
+                Debug.Print "Details document is not accessible."
+                MsgBox "Error: Unable to access the details document.", vbCritical
+            End If
+
+
+            If change_status <> "" Then
+                Debug.Print "Starting process with change_status: " & change_status
+            
+                ' Convert change_status to uppercase and trim it
+                change_status = UCase(Trim(change_status))
+                Debug.Print "Processed change_status: " & change_status
+            
+                ' Check if the current status is "Closed"
+                If UCase(Trim(currentStatus)) = "CLOSED" Then
+                    Debug.Print "Current status is 'Closed'. Changing status to 'DMI' first."
+            
+                    ' First status change to "DMI"
+                    Set changestatusBtn = detailsDoc.getElementsByClassName("de_but")(0)
+                    Set changestatusBtt = changestatusBtn.getElementsByTagName("a")(2) ' Index 2 for first status change
+                    changestatusBtt.Click
+                    Debug.Print "Clicked 'changestatusBtt' for initial change to 'DMI'."
+            
+                    Application.Wait Now + TimeValue("00:00:02") ' Wait for iframe to load
+                    Set iframe = detailsDoc.getElementsByName("myframe__1")(0)
+            
+                    ' Verify iframe existence and load iframedoc
+                    If iframe Is Nothing Then
+                        MsgBox "Error: iframe not found for first status change. Exiting process.", vbCritical
+                        Exit Sub
+                    End If
+                    Set iframedoc = iframe.contentWindow.document
+            
+                    ' Set customer status to "DMI"
+                    Set custStatus = iframedoc.getElementsByName("new_cust_status_code")(0)
+                    If Not custStatus Is Nothing Then
+                        custStatus.Click
+                        Set Options = custStatus.getElementsByTagName("option")
+                        For i = 0 To Options.Length - 1
+                            Set optionElement = Options.Item(i)
+                            If UCase(Trim(optionElement.innertext)) = "DMI" Then
+                                optionElement.Selected = True
+                                Exit For
+                            End If
+                        Next i
+                        Application.SendKeys "{ENTER}"
+            
+                        ' Confirm with OK button
+                        Set okBtn = iframedoc.getElementsByClassName("btn toggleButton")(0)
+                        okBtn.Click
+                    Else
+                        MsgBox "Error: custStatus not found for 'DMI' change. Exiting process.", vbCritical
+                        Exit Sub
+                    End If
+                Else
+                    Debug.Print "Current status is not 'Closed'; no need for 'DMI' change."
+                End If
+            
+                ' Proceed to change to original change_status
+                Debug.Print "Proceeding to change to original change_status: " & change_status
+                Application.Wait Now + TimeSerial(0, 0, 3) ' Wait before retrying frame
+            
+                ' Set frame and document references
+                retryCount = 0
+                Do While retryCount < 3
+                    Set allFrames = ie.getElementsByTagName("frame")
+                    If allFrames.Length > 1 Then
+                        Set contentFrame = allFrames(1)
+                        Exit Do
+                    End If
+                    retryCount = retryCount + 1
+                    Application.Wait Now + TimeSerial(0, 0, 2)
+                Loop
+                If contentFrame Is Nothing Then
+                    MsgBox "Error: Content frame not found. Exiting process.", vbCritical
+                    Exit Sub
+                End If
+            
+                Set contentdoc = contentFrame.contentWindow.document
+                Set innerframe = contentdoc.getElementsByTagName("frame")
+                Set detailsframe = innerframe(0)
+                Set detailsDoc = detailsframe.contentWindow.document
+                If detailsframe Is Nothing Then
+                    MsgBox "Error: Details frame not found. Exiting process.", vbCritical
+                    Exit Sub
+                End If
+            
+                ' Adjust index based on "Closed" status change
+                Dim buttonIndex As Integer
+                buttonIndex = IIf(UCase(Trim(currentStatus)) = "CLOSED", 3, 2) ' 3 if closed (second change), else 2
+            
+                Set changestatusBtn = detailsDoc.getElementsByClassName("de_but")(0)
+                Set changestatusBtt = changestatusBtn.getElementsByTagName("a")(buttonIndex)
+            
+                If changestatusBtt Is Nothing Then
+                    MsgBox "Error: changestatusBtt is not available. Exiting process.", vbCritical
+                    Exit Sub
+                Else
+                    changestatusBtt.Click
+                End If
+            
+                Application.Wait Now + TimeValue("00:00:05") ' Wait for iframe to reload
+            
+                Set iframe = detailsDoc.getElementsByName("myframe__1")(0)
+                If iframe Is Nothing Then
+                    MsgBox "Error: iframe not found for second status change. Exiting process.", vbCritical
+                    Exit Sub
+                End If
+                Set iframedoc = iframe.contentWindow.document
+            
+                Set custStatus = iframedoc.getElementsByName("new_cust_status_code")(0)
+                If Not custStatus Is Nothing Then
+                    custStatus.Click
+                    Set Options = custStatus.getElementsByTagName("option")
+                    For i = 0 To Options.Length - 1
+                        Set optionElement = Options.Item(i)
+                        If UCase(Trim(optionElement.innertext)) = change_status Then
+                            optionElement.Selected = True
+                            Exit For
+                        End If
+                    Next i
+                    Application.SendKeys "{ENTER}"
+            
+                    Set okBtn = iframedoc.getElementsByClassName("btn toggleButton")(0)
+                    okBtn.Click
+                Else
+                    MsgBox "Error: custStatus not found for '" & change_status & "' update. Exiting process.", vbCritical
+                    Exit Sub
+                End If
+            End If
+
+
+
+
+            
+            ' Try to fetch frames manually by tag name (with retries)
+            retryCount = 0
+            Do While retryCount < 3
+                Set allFrames = ie.getElementsByTagName("frame")
+                Debug.Print "Number of frames found: " & allFrames.Length
+                
+                If allFrames.Length > 1 Then
+                    Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                    If Not contentFrame Is Nothing Then
+                        Debug.Print "Content frame src: " & contentFrame.src
+                        Exit Do
+                    End If
+                End If
+                
+                retryCount = retryCount + 1
+                Application.Wait Now + TimeSerial(0, 0, 2)
+            Loop
+            
+            If contentFrame Is Nothing Then
+                Debug.Print "Content frame not found after retries. Exiting sub."
+                Exit Sub
+            End If
+            
+            ' Process elements in the content frame
+            'Do While contentFrame.contentWindow.readyState <> "complete"
+             '   DoEvents
+            'Loop
+            Set contentdoc = contentFrame.contentWindow.document
+            Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+            ' Access the "details" frame inside the content frame
+            Set detailsframe = innerframe(0)
+            Set detailsDoc = detailsframe.contentWindow.document
+            If detailsframe Is Nothing Then
+                Debug.Print "Details frame not found."
+                Exit Sub
+            End If
+            'EDIT
+            ' --- EDIT BRANCH CODE SECTION ---
+            If branch_code <> "" Then
+                Debug.Print "Starting EDIT process for branch_code: " & branch_code
+                
+                Set editBtn = detailsDoc.getElementsByClassName("de_but")(0)
+                If editBtn Is Nothing Then
+                    Debug.Print "editBtn not found."
+                    GoTo skipEdit
+                End If
+                
+                Set editBtt = editBtn.getElementsByTagName("a")(0)
+                If editBtt Is Nothing Then
+                    Debug.Print "editBtt (Edit link) not found."
+                    GoTo skipEdit
+                End If
+                
+                Debug.Print "Clicking Edit button..."
+                editBtt.Click
+                Application.Wait Now + TimeSerial(0, 0, 2)
+                
+                ' --- Re-fetch frames after edit click ---
+                retryCount = 0
+                Do While retryCount < 5
+                    Set allFrames = ie.getElementsByTagName("frame")
+                    Debug.Print "After Edit Click - Frames found: " & allFrames.Length
+                    
+                    If allFrames.Length > 1 Then
+                        Set contentFrame = allFrames(1)
+                        If Not contentFrame Is Nothing Then
+                            Debug.Print "Content frame refreshed, src: " & contentFrame.src
+                            Exit Do
+                        End If
+                    End If
+                    
+                    retryCount = retryCount + 1
+                    Application.Wait Now + TimeSerial(0, 0, 1)
+                Loop
+                
+                If contentFrame Is Nothing Then
+                    Debug.Print "Content frame not found after Edit click retries."
+                    GoTo skipEdit
+                End If
+                
+                ' --- Access inner details frame again ---
+                Set contentdoc = contentFrame.contentWindow.document
+                Set innerframe = contentdoc.getElementsByTagName("frame")
+                
+                If innerframe.Length = 0 Then
+                    Debug.Print "No innerframe found after Edit click."
+                    GoTo skipEdit
+                End If
+                
+                Set detailsframe = innerframe(0)
+                If detailsframe Is Nothing Then
+                    Debug.Print "Details frame is Nothing after Edit click."
+                    GoTo skipEdit
+                End If
+                
+                Set detailsDoc = detailsframe.contentWindow.document
+                If detailsDoc Is Nothing Then
+                    Debug.Print "Details document is Nothing after Edit click."
+                    GoTo skipEdit
+                End If
+                
+                ' --- Try to get branch code input field ---
+                Dim attempt As Integer
+                Dim foundBranch As Boolean
+                foundBranch = False
+                For attempt = 1 To 5
+                    Set branchCode = Nothing
+                    On Error Resume Next
+                    Set branchCode = detailsDoc.getElementById("ACCOUNT_DETAIL_GEN_BRCH_CODE")
+                    On Error GoTo 0
+                    
+                    If Not branchCode Is Nothing Then
+                        Debug.Print "Branch code field found on attempt " & attempt
+                        foundBranch = True
+                        Exit For
+                    Else
+                        Debug.Print "Branch code field not found, retrying... (" & attempt & ")"
+                        Application.Wait Now + TimeSerial(0, 0, 1)
+                    End If
+                Next attempt
+                
+                If Not foundBranch Then
+                    Debug.Print "Failed to find branch code input field after multiple attempts."
+                    GoTo skipEdit
+                End If
+                
+                ' --- Input branch code ---
+                branchCode.Value = branch_code
+                Debug.Print "Branch code value set to: " & branch_code
+                
+                ' --- Find and click save button ---
+                Set saveBtn = detailsDoc.getElementsByClassName("de_but")(0)
+                If saveBtn Is Nothing Then
+                    Debug.Print "Save button container not found."
+                    GoTo skipEdit
+                End If
+                
+                Set saveBtt = saveBtn.getElementsByTagName("a")(0)
+                If saveBtt Is Nothing Then
+                    Debug.Print "Save button element (anchor) not found."
+                    GoTo skipEdit
+                End If
+                
+                Debug.Print "Clicking Save button..."
+                saveBtt.Click
+                
+            Else
+                Debug.Print "Branch code is empty, skipping EDIT section."
+            End If
+            
+skipEdit:
+            Do While ie.readyState <> "complete"
+                DoEvents
+            Loop
+            
+            endTime = Now
+            ws.Cells(r, 7).Value = endTime
+            ws.Cells(r, 5).Value = "Done"
+            Debug.Print "Row " & r & " processed successfully."
+
+        End If
+nextLoop:
+        ' Move to the next row
+        r = r + 1
+    Loop
+    
+    ' Clean up
+    MsgBox "Process Done!", vbInformation, "Process Complete"
+    Set ie = Nothing
+    Set ws = Nothing
+End Sub
+Sub checkeracc()
+    Dim ie As Object
+    Dim ws As Worksheet
+    Dim r As Long
+    Dim accNo As String
+    Dim allFrames As Object
+    Dim detailsframe As Object
+    Dim contentFrame As Object
+    Dim submitButton As Object
+    Dim retryCount As Integer
+    Dim change_status As String
+    Dim branch_code As String
+    Dim startTime As Date
+    Dim endTime As Date
+    Dim frameName As String
+    Dim webChangeStatus As String
+    Dim webBranchCode As String
+    Dim webOfficerCode As String
+    Dim comparisonResult As String
+    Dim approveData As Boolean
+    
+    
+    ' Attach to an existing Edge IE mode instance by title
+    'frameName = "Unit Trust System"
+    Set ie = GetEdgeIeDOM(frameName)
+    
+    ' Check if the instance was found
+    If ie Is Nothing Then
+        Debug.Print "No existing IE instance found. Exiting sub."
+        Exit Sub
+    End If
+    
+    ' Make the window visible (for debugging purposes)
+    ' Note: Edge in IE mode might not support .Visible directly.
+     'ie.Visible = True ' Uncomment if .Visible is supported
+    
+    ' Wait for IE to fully load the page
+    'Do While ie.Busy Or ie.readyState <> 4
+    '    DoEvents
+    'Loop
+    
+    ' Reference to the first worksheet
+    Set ws = ThisWorkbook.Sheets(2)
+    
+    ' Find the first row to process (from column 2 being not empty)
+    r = 5 ' Start from row 5
+    Do While ws.Cells(r, 2).Value <> ""
+        ' Check if the status cell is not empty; if it's not empty, skip to the next row
+        If ws.Cells(r, 5).Value <> "" Then
+            GoTo continueLoop
+        End If
+        approveData = False
+        ' Extract values from Excel
+        accNo = ws.Cells(r, 2).Value
+        change_status = ws.Cells(r, 3).Value
+        branch_code = ws.Cells(r, 4).Value
+        
+        ' Log the start time
+        startTime = Now
+        ws.Cells(r, 6).Value = startTime
+        
+        ' Initialize the comparison result variable
+        comparisonResult = ""
+        
+        'REFRESH FRAME
+        ' Wait for the submission to complete
+        Application.Wait Now + TimeSerial(0, 0, 3)
+            
+        ' Try to fetch frames manually by tag name (with retries)
+        retryCount = 0
+        Do While retryCount < 3
+            Set allFrames = ie.getElementsByTagName("frame")
+            Debug.Print "Number of frames found: " & allFrames.Length
+                
+            If allFrames.Length > 1 Then
+                Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                If Not contentFrame Is Nothing Then
+                    Debug.Print "Content frame src: " & contentFrame.src
+                    Exit Do
+                End If
+            End If
+                
+            retryCount = retryCount + 1
+            Application.Wait Now + TimeSerial(0, 0, 2)
+        Loop
+            
+        If contentFrame Is Nothing Then
+            Debug.Print "Content frame not found after retries. Exiting sub."
+            Exit Sub
+        End If
+            
+        ' Process elements in the content frame
+        'Do While contentFrame.contentWindow.readyState <> "complete"
+            '   DoEvents
+        'Loop
+        Set contentdoc = contentFrame.contentWindow.document
+        Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+        ' Access the "details" frame inside the content frame
+        Set detailsframe = innerframe(0)
+        Set detailsDoc = detailsframe.contentWindow.document
+        If detailsframe Is Nothing Then
+            Debug.Print "Details frame not found."
+            Exit Sub
+        End If
+        'get search button
+        Set BtnSearch = detailsDoc.getElementsByClassName("btn toggleButton")(5) ' Adjust index if needed
+
+        ' Check if BtnSearch exists and its inner text is as expected
+        If Not BtnSearch Is Nothing Then
+            ' Ensure you're getting the inner text or text content
+            If BtnSearch.innertext = "Search" Then
+                BtnSearch.Click ' Perform the click if the text matches
+            Else
+                MsgBox "Button text mismatch. Found: " & BtnSearch.innertext, vbExclamation
+            End If
+        Else
+            MsgBox "Button not found", vbExclamation
+        End If
+        'REFRESH FRAME
+        ' Wait for the submission to complete
+        Application.Wait Now + TimeSerial(0, 0, 3)
+            
+        ' Try to fetch frames manually by tag name (with retries)
+        retryCount = 0
+        Do While retryCount < 3
+            Set allFrames = ie.getElementsByTagName("frame")
+            Debug.Print "Number of frames found: " & allFrames.Length
+                
+            If allFrames.Length > 1 Then
+                Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                If Not contentFrame Is Nothing Then
+                    Debug.Print "Content frame src: " & contentFrame.src
+                    Exit Do
+                End If
+            End If
+                
+            retryCount = retryCount + 1
+            Application.Wait Now + TimeSerial(0, 0, 2)
+        Loop
+            
+        If contentFrame Is Nothing Then
+            Debug.Print "Content frame not found after retries. Exiting sub."
+            Exit Sub
+        End If
+            
+        ' Process elements in the content frame
+        'Do While contentFrame.contentWindow.readyState <> "complete"
+            '   DoEvents
+        'Loop
+        Set contentdoc = contentFrame.contentWindow.document
+        Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+        ' Access the "details" frame inside the content frame
+        Set detailsframe = innerframe(0)
+        Set detailsDoc = detailsframe.contentWindow.document
+        If detailsframe Is Nothing Then
+            Debug.Print "Details frame not found."
+            Exit Sub
+        End If
+        'Get input Modal
+        Set iframe = detailsDoc.getElementsByName("myframe__1")(0)
+        Set iframedoc = iframe.contentWindow.document
+        'input CIF
+        Set inputAcc = iframedoc.getElementById("SEARCH_ACA_AC_NO")
+        inputAcc.Value = accNo
+        'ok button
+        Set okBtn = iframedoc.getElementsByClassName("btn toggleButton")(0) ' Adjust index if needed
+        If Not okBtn Is Nothing Then
+            ' Ensure you're getting the inner text or text content
+            If okBtn.innertext = "OK" Then ' Replace with the actual expected text
+                okBtn.Click
+            Else
+                MsgBox "OK Button text mismatch. Found: " & okBtn.innertext, vbExclamation
+            End If
+        Else
+            MsgBox "OK Button not found", vbExclamation
+        End If
+        
+        'REFRESH FRAME
+        ' Wait for the submission to complete
+        Application.Wait Now + TimeSerial(0, 0, 3)
+            
+        ' Try to fetch frames manually by tag name (with retries)
+        retryCount = 0
+        Do While retryCount < 3
+            Set allFrames = ie.getElementsByTagName("frame")
+            Debug.Print "Number of frames found: " & allFrames.Length
+                
+            If allFrames.Length > 1 Then
+                Set contentFrame = allFrames(1) ' Second frame (index starts from 0)
+                If Not contentFrame Is Nothing Then
+                    Debug.Print "Content frame src: " & contentFrame.src
+                    Exit Do
+                End If
+            End If
+                
+            retryCount = retryCount + 1
+            Application.Wait Now + TimeSerial(0, 0, 2)
+        Loop
+            
+        If contentFrame Is Nothing Then
+            Debug.Print "Content frame not found after retries. Exiting sub."
+            Exit Sub
+        End If
+            
+        ' Process elements in the content frame
+        'Do While contentFrame.contentWindow.readyState <> "complete"
+            '   DoEvents
+        'Loop
+        Set contentdoc = contentFrame.contentWindow.document
+        Set innerframe = contentdoc.getElementsByTagName("frame")
+            
+        ' Access the "details" frame inside the content frame
+        Set detailsframe = innerframe(0)
+        Set detailsDoc = detailsframe.contentWindow.document
+        If detailsframe Is Nothing Then
+            Debug.Print "Details frame not found."
+            Exit Sub
+        End If
+        ' Assume you already have the detailsDoc from the detailsFrame
+
+        ' Step 1: Find the form by its name
+        Set form = detailsDoc.getElementsByName("fmDetails")(0)
+        
+        If form Is Nothing Then
+            Debug.Print "Form not found."
+            Exit Sub
+        End If
+        
+        ' Step 2: Find the table within the form
+        Set Table = form.getElementsByTagName("table")(0) ' Adjust the index if necessary
+        
+        If Table Is Nothing Then
+            Debug.Print "Table not found inside form."
+            Exit Sub
+        End If
+        
+        ' Step 3: Get the rows of the table directly using item indexing
+        If Table.Rows.Length > 2 Then
+            ' Get the third row (index starts from 2)
+            Set thirdRow = Table.Rows.Item(2)
+            
+            ' Get the second cell in the third row
+            If thirdRow.Cells.Length > 1 Then
+                Set secondCell = thirdRow.Cells.Item(1)
+                
+                ' Print the innerText of the cell
+                Debug.Print "Third row, second cell value: " & secondCell.innertext
+                
+                ' Step 4: Now look for the <a> tag within this cell
+                Set cellLinks = secondCell.getElementsByTagName("a")
+                
+                If cellLinks.Length > 0 Then
+                    ' Assuming you want the first link found in the cell
+                    Set linkElement = cellLinks.Item(0)
+                    Debug.Print "Found element with OnClick: " & linkElement.getAttribute("onclick")
+                    linkElement.Click
+                Else
+                    Debug.Print "Link element not found in third row, second column. Skipping Account"
+                    Exit Sub
+                End If
+            Else
+                Debug.Print "Less than 2 cells found in the third row."
+                MsgBox "Error: Less than 2 cells in the third row. Process stopping.", vbCritical
+                Exit Sub ' Stops the process
+            End If
+        Else
+            Debug.Print "Less than 3 rows found in the table."
+            Set BtnRefresh = detailsDoc.getElementsByClassName("btn toggleButton")(0) ' Adjust index if needed
+
+            ' Check if BtnSearch exists and its inner text is as expected
+            If Not BtnRefresh Is Nothing Then
+                ' Ensure you're getting the inner text or text content
+                If BtnRefresh.innertext = "Refresh" Then
+                    ws.Cells(r, 5).Value = "Account Not Found"
+                    BtnRefresh.Click ' Perform the click if the text matches
+                    GoTo continueLoop
+                Else
+                    MsgBox "Button text mismatch. Found: " & BtnRefresh.innertext, vbExclamation
+                    Exit Sub
+                End If
+            Else
+                MsgBox "Button not found", vbExclamation
+                Exit Sub
+            End If
+        End If
+        
+        Dim timeout As Double
+        Dim isFrameLoaded As Boolean
+        
+        ' Step 1: Wait for the submission to complete
+        Application.Wait Now + TimeSerial(0, 0, 3) ' Adjust wait time if needed
+        
+        ' Step 2: Retry fetching frames up to 3 times with delay
+        retryCount = 0
+        Do While retryCount < 3
+            Set allFrames = ie.getElementsByTagName("frame")
+            Debug.Print "Number of frames found: " & allFrames.Length
+        
+            If allFrames.Length > 1 Then
+                Set contentFrame = allFrames(1) ' Assuming you need the second frame
+        
+                ' Step 3: Check if the content frame is loaded
+                If Not contentFrame Is Nothing Then
+                    Debug.Print "Content frame src: " & contentFrame.src
+        
+                    ' Step 4: Ensure the content frame is fully loaded
+                    timeout = Timer + 30 ' 30 second timeout for the frame load
+                    isFrameLoaded = False
+        
+                    ' Use contentWindow.document.readyState for the frame
+                    Do While contentFrame.contentWindow.document.readyState <> "complete" And Timer < timeout
+                        DoEvents ' Yield control to allow frame to load
+                    Loop
+                    
+                    If contentFrame.contentWindow.document.readyState = "complete" Then
+                        Debug.Print "Content frame fully loaded."
+                        isFrameLoaded = True
+                        Exit Do ' Exit loop if frame is fully loaded
+                    Else
+                        Debug.Print "Content frame not fully loaded, retrying..."
+                    End If
+                End If
+            End If
+        
+            retryCount = retryCount + 1
+            Application.Wait Now + TimeSerial(0, 0, 2) ' Short wait before retrying
+        Loop
+        
+        If Not isFrameLoaded Then
+            Debug.Print "Content frame not found or loaded after retries. Exiting sub."
+            Exit Sub
+        End If
+        
+        ' Step 5: Now, check if the inner frame inside the content frame is loaded
+        Set contentdoc = contentFrame.contentWindow.document
+        Set innerframe = contentdoc.getElementsByTagName("frame")
+        
+        If innerframe.Length > 0 Then
+            Set detailsframe = innerframe(0) ' Assuming the frame you need is the first one
+        
+            ' Step 6: Ensure the details frame is fully loaded
+            timeout = Timer + 30 ' 30 second timeout for the inner frame load
+            Do While detailsframe.contentWindow.document.readyState <> "complete" And Timer < timeout
+                DoEvents ' Yield control to allow inner frame to load
+            Loop
+        
+            If detailsframe.contentWindow.document.readyState = "complete" Then
+                Debug.Print "Details frame fully loaded."
+            Else
+                Debug.Print "Details frame not fully loaded."
+                MsgBox "Error: Details frame did not fully load. Process stopping.", vbCritical
+                Exit Sub
+            End If
+        Else
+            Debug.Print "No inner frames found."
+            Exit Sub
+        End If
+        
+        ' Step 7: Proceed to retrieve iframe data
+        Set detailsDoc = detailsframe.contentWindow.document
+        Set iframe = detailsDoc.getElementsByName("myframe__1")(0)
+        
+        If iframe Is Nothing Then
+            Debug.Print "Iframe 'myframe__1' not found."
+            MsgBox "Error: Iframe 'myframe__1' not found. Process stopping.", vbCritical
+            Exit Sub ' Stop the process if iframe is not found
+        Else
+            Debug.Print "Iframe 'myframe__1' found successfully."
+        End If
+        
+        ' Now continue with the document inside the iframe
+        'Set iframedoc = iframe.contentWindow.document
+        If Not iframe Is Nothing Then ' 1st If - iframe check
+            ' Access the document inside the iframe using contentWindow
+            Set iframedoc = iframe.contentWindow.document
+        
+            If Not iframedoc Is Nothing Then ' 2nd If - iframe doc check
+                ' Declare variables for the elements
+                Dim divdummy As Object
+                Dim custStatusElement As Object
+                Dim branchCodeElement As Object
+                Dim officerCodeElement As Object
+                Dim labelElements As Object
+                Dim labelElement As Object
+                Dim labelText As String
+                Dim fontColor As String
+                Dim hasCustomerStatus As Boolean
+                Dim hasBranch As Boolean
+                hasBranch = False
+                hasCustomerStatus = False
+                ' Access the "dummy" div
+                Set divdummy = iframedoc.getElementById("dummy")
+                Set labelElements = iframedoc.getElementsByClassName("tablabel th")
+                
+                For Each labelElement In labelElements
+                    ' Find the <font> tag inside the <td> element
+                    Set fontElement = labelElement.getElementsByTagName("font")(0)
+                    
+                    If Not fontElement Is Nothing Then
+                        labelText = Trim(UCase(fontElement.innertext)) ' Normalize the text for comparison
+                        fontColor = fontElement.Color ' Check the font color
+                
+                        ' Check for "Account Status" with red font color
+                        If labelText = "ACCOUNT STATUS" And fontColor = "red" Then
+                            hasCustomerStatus = True
+                            Debug.Print "Customer Status label found with red color."
+                        End If
+                
+                        ' Check for "Branch" with red font color
+                        If labelText = "BRANCH" And fontColor = "red" Then
+                            hasBranch = True
+                            Debug.Print "Branch label found with red color."
+                        End If
+                    End If
+                Next labelElement
+                
+                If hasCustomerStatus Or hasBranch Then
+                    approveData = True
+                    Debug.Print "data for " & accNo & " is Approved."
+                End If
+                
+                
+                If Not divdummy Is Nothing Then ' 3rd If - dummy div check
+                    ' Directly retrieve the specific elements inside divdummy
+                    Set custStatusElement = divdummy.querySelector("#SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE")
+                    Set branchCodeElement = divdummy.querySelector("#SPAN_ACCOUNT_DETAIL_GEN_BRCH_CODE")
+        
+                    ' Check and print values for each element
+                    If Not custStatusElement Is Nothing Then ' 4th If - custStatusElement check
+                        webChangeStatus = custStatusElement.innertext
+                        Debug.Print "Web Change Status: " & webChangeStatus
+                    Else
+                        Debug.Print "Element 'SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE' not found."
+                        MsgBox "Error: Element 'SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE' not found.", vbCritical
+                    End If ' End of 4th If - custStatusElement check
+        
+                    ' Example for Branch Code (if needed)
+                    If Not branchCodeElement Is Nothing Then
+                        webBranchCode = branchCodeElement.innertext
+                        Debug.Print "Branch Code: " & branchCodeElement.innertext
+                    Else
+                        Debug.Print "Element 'SPAN_ACCOUNT_DETAIL_GEN_BRCH_CODE' not found."
+                    End If
+                Else
+                    Debug.Print "Div 'dummy' not found."
+                    MsgBox "Error: Unable to access the iframe document.", vbCritical
+                End If ' End of 3rd If - dummy div check
+            Else
+                Debug.Print "Iframe document is not set."
+                MsgBox "Error: Unable to access the iframe document.", vbCritical
+            End If ' End of 2nd If - iframe doc check
+        Else
+            Debug.Print "Iframe 'myframe__1' not found."
+            MsgBox "Error: Iframe 'myframe__1' not found. Process stopping.", vbCritical
+        End If ' End of 1st If - iframe check
+        Debug.Print "Web Change Status: " & webChangeStatus
+        Debug.Print "Web Branch Code: " & webBranchCode
+        
+        ' Compare values between Excel and the webpage, and accumulate differences
+        ' Compare values between Excel and the webpage, and accumulate differences
+        ' Check Change Status, but skip if Excel value is empty
+        If change_status <> "" Then
+            If Trim(UCase(change_status)) <> Trim(UCase(webChangeStatus)) Then
+                comparisonResult = comparisonResult & "Change_Status," ' Stop further execution
+            End If
+        End If
+        
+        ' Check Branch Code, but skip if Excel value is empty
+        If branch_code <> "" Then
+            If Trim(UCase(branch_code)) <> Trim(UCase(webBranchCode)) Then
+                comparisonResult = comparisonResult & "Branch_Code," ' Stop further execution
+            End If
+        End If
+        
+        ' Remove the last comma and space if there were any mismatches
+        If Len(comparisonResult) > 0 Then
+            comparisonResult = Left(comparisonResult, Len(comparisonResult) - 1)
+            
+            ' Store the comparison result in column 6
+            ws.Cells(r, 5).Value = comparisonResult
+            ' Continue with closing the button check
+            Set closeBtn = iframedoc.getElementsByClassName("close")(0) ' Adjust index if needed
+            If Not closeBtn Is Nothing Then
+                ' Ensure you're getting the inner text or text content
+                ' Replace with the actual expected text
+                closeBtn.Click
+            Else
+                MsgBox "Close Button not found", vbExclamation
+                Exit Sub
+            End If
+        Else
+            ' If no mismatches, proceed and store result
+            comparisonResult = "No mismatches"
+            ws.Cells(r, 5).Value = comparisonResult
+        
+            ' Continue with closing the button check
+            Set closeBtn = iframedoc.getElementsByClassName("close")(0) ' Adjust index if needed
+            If Not closeBtn Is Nothing Then
+                ' Ensure you're getting the inner text or text content
+                ' Replace with the actual expected text
+                closeBtn.Click
+            Else
+                MsgBox "Close Button not found", vbExclamation
+                Exit Sub
+            End If
+        
+            ' REFRESH FRAME
+            ' Wait for the submission to complete
+            Application.Wait Now + TimeSerial(0, 0, 3)
+        
+            ' ... [your existing frame retrieval and handling code] ...
+        
+            ' Last step: only execute if there are no mismatches
+            If approveData Then
+                Set CheckBox = detailsDoc.getElementById("MarkDel")
+                CheckBox.Click
+                Set approveBtn = detailsDoc.getElementsByClassName("btn toggleButton")(1) ' Adjust index if needed
+                If Not approveBtn Is Nothing Then
+                    ' Ensure you're getting the inner text or text content
+                    If approveBtn.innertext = "Approve" Then ' Replace with the actual expected text
+                        approveBtn.Click
+                        ws.Cells(r, 5).Value = "Approved"
+                    Else
+                        MsgBox "Approve Button text mismatch. Found: " & approveBtn.innertext, vbExclamation
+                    End If
+                Else
+                    MsgBox "Approve Button not found", vbExclamation
+                End If
+            Else
+                Set CheckBox = detailsDoc.getElementById("MarkDel")
+                CheckBox.Click
+                Set approveBtn = detailsDoc.getElementsByClassName("btn toggleButton")(2) ' Adjust index if needed
+                If Not approveBtn Is Nothing Then
+                    ' Ensure you're getting the inner text or text content
+                    If approveBtn.innertext = "Undo" Then ' Replace with the actual expected text
+                        approveBtn.Click
+                        ws.Cells(r, 5).Value = "Undo"
+                    Else
+                        MsgBox "Approve Button text mismatch. Found: " & approveBtn.innertext, vbExclamation
+                    End If
+                Else
+                    MsgBox "Approve Button not found", vbExclamation
+                End If
+            End If
+        End If
+        
+        ' Log the end time
+        endTime = Now
+        ws.Cells(r, 7).Value = endTime
+continueLoop:
+        ' Move to the next row
+        r = r + 1
+    Loop
+End Sub
+
