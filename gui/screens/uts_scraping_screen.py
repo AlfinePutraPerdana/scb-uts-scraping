@@ -1,6 +1,7 @@
 from pathlib import Path
 from threading import Event, Thread
 from urllib.parse import urlparse
+import traceback
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -214,6 +215,9 @@ class UTSScrapingScreen(QWidget):
 
     def _run_workflow(self, workbook_path, mode):
         try:
+            self.log_message.emit(
+                f"Starting {mode} workflow with workbook {workbook_path!r}."
+            )
             run_uts_workflow(
                 self.scraper.driver,
                 workbook_path,
@@ -223,6 +227,7 @@ class UTSScrapingScreen(QWidget):
             )
         except Exception as error:
             self.log_message.emit(f"Workflow stopped: {error}")
+            self.log_message.emit(f"Workflow traceback:\n{traceback.format_exc()}")
         finally:
             self.workflow_finished.emit()
 
