@@ -17,6 +17,9 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 
+# Execution map: start at run_uts_workflow, which selects the UTS window and sends
+# each workbook row to its mode-specific processor. Follow that processor's
+# docstring to trace the row through search, read/compare, edit or approval, and save.
 # -----------------------------------------------------------------------------
 # Workbook validation and header detection
 # This section validates the Excel sheet layout before any automation runs.
@@ -72,15 +75,17 @@ HEADER_NAMES = {
 
 
 def normalize(value):
+    """Normalize workbook or web text for comparisons; called by validation and row workflows."""
     return str(value or "").strip().upper()
 
 
 def _normalize_header(value):
+    """Remove header punctuation for validate_uts_workbook's header-alias comparisons."""
     return re.sub(r"[^A-Z0-9]", "", normalize(value))
 
 
 def validate_uts_workbook(workbook_path, mode):
-    """Validate the selected customer or account worksheet layout."""
+    """Validate the selected workbook layout before the GUI starts the matching UTS workflow."""
     mode = str(mode).strip().lower()
     if mode not in {"maker", "checker", "account_maker", "account_checker"}:
         return False, "Choose a UTS maker or checker workflow before validating."
@@ -163,6 +168,7 @@ def validate_uts_workbook(workbook_path, mode):
 
 
 def validate_customer_workbook(workbook_path, mode):
+    """Restrict legacy customer-only callers, then delegate shared checks to validate_uts_workbook."""
     mode = str(mode).strip().lower()
     if mode not in {"maker", "checker"}:
         return False, "Choose Customer Maker or Customer Checker before validating."
@@ -175,18 +181,20 @@ def validate_customer_workbook(workbook_path, mode):
 # the UTS pages to load the right content before each action.
 # -----------------------------------------------------------------------------
 def _log(callback, message):
+    """Send a workflow message to its callback; called by runner and browser helpers for diagnostics."""
     callback = callback or _WORKFLOW_LOG_CALLBACK.get()
     if callback:
         callback(message)
 
 
 def _switch_to_uts_window(driver, timeout=30):
-    """Select the UTS popup opened from the login window by its browser title."""
+    """Select the logged-in UTS popup before row processing; run_uts_workflow calls this once at startup."""
     observed_titles = set()
     reported_titles = set()
     _log(None, f"Looking for a browser window titled '{UTS_WINDOW_TITLE}'.")
 
     def find_uts_window(current_driver):
+        """Poll browser handles until the UTS title appears; WebDriverWait invokes this callback."""
         for handle in current_driver.window_handles:
             try:
                 current_driver.switch_to.window(handle)
@@ -216,6 +224,7 @@ def _switch_to_uts_window(driver, timeout=30):
 
 
 def _wait_for_frame_count(driver, count, timeout):
+    """Wait until the current page/frame has enough child frames for _switch_to_details."""
     _log(None, f"Waiting for at least {count} frame(s) (timeout={timeout}s).")
     WebDriverWait(driver, timeout).until(
         lambda current: len(current.find_elements(By.CSS_SELECTOR, FRAME_SELECTOR)) >= count
@@ -224,6 +233,7 @@ def _wait_for_frame_count(driver, count, timeout):
 
 
 def _switch_to_details(driver, timeout=15):
+    """Enter UTS's content then details frame; called before actions because UTS controls live there."""
     _log(None, "Switching to top-level page content.")
     driver.switch_to.default_content()
     _wait_for_frame_count(driver, 2, timeout)
@@ -238,6 +248,7 @@ def _switch_to_details(driver, timeout=15):
 
 
 def _wait_element(driver, by, value, timeout=15):
+    """Wait for a UTS element to exist; called by workflows before reading or changing that control."""
     _log(None, f"Waiting for element {by}={value!r} (timeout={timeout}s).")
     element = WebDriverWait(driver, timeout).until(
         EC.presence_of_element_located((by, value))
@@ -247,6 +258,7 @@ def _wait_element(driver, by, value, timeout=15):
 
 
 def _click_element(driver, by, value, timeout=15):
+    """Wait for and click a locator; called where a specific CSS/ID control drives the next workflow step."""
     _log(None, f"Waiting for clickable element {by}={value!r}.")
     element = WebDriverWait(driver, timeout).until(
         EC.element_to_be_clickable((by, value))
@@ -257,12 +269,14 @@ def _click_element(driver, by, value, timeout=15):
 
 
 def _click_parent_link(driver, parent_selector, index, action, timeout=15):
+    """Scroll to and click a parent-scoped action link used by maker and checker flows."""
     _log(
         None,
         f"Waiting for {action} link {index} inside parent {parent_selector!r}.",
     )
 
     def find_link(current_driver):
+        """Poll the selected parent for the requested visible link; WebDriverWait invokes this callback."""
         parent = current_driver.find_element(By.CSS_SELECTOR, parent_selector)
         links = parent.find_elements(By.TAG_NAME, "a")
         if len(links) <= index:
@@ -274,16 +288,23 @@ def _click_parent_link(driver, parent_selector, index, action, timeout=15):
 
     link = WebDriverWait(driver, timeout).until(find_link)
     _log(None, f"{action} link text: {link.text.strip()!r}.")
+    _log(None, f"Scrolling {action} link to the center of the viewport before clicking.")
+    driver.execute_script(
+        "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});",
+        link,
+    )
     link.click()
     _log(None, f"Clicked {action} link in parent {parent_selector!r}.")
     return link
 
 
 def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", timeout=15):
+    """Click a unique visible button by label; checker flows use it where selectors are ambiguous."""
     expected = normalize(expected_text)
     _log(None, f"Looking for a unique button labeled {expected_text!r}.")
 
     def find_buttons(current_driver):
+        """Find visible, enabled matches on each wait poll so hidden duplicate buttons are ignored."""
         buttons = [
             button
             for button in current_driver.find_elements(By.CSS_SELECTOR, selector)
@@ -305,6 +326,7 @@ def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", t
 
 
 def _click_selector_with_text(driver, selector, expected_text, timeout=15):
+    """Click a documented selector only after checking its label; Customer Checker uses this for Search."""
     _log(
         None,
         f"Waiting for button {selector!r} labeled {expected_text!r}.",
@@ -326,6 +348,7 @@ def _click_selector_with_text(driver, selector, expected_text, timeout=15):
 def _click_button_at_index_with_text(
     driver, selector, index, expected_text, timeout=15
 ):
+    """Use a VBA-matched button index and verify its label; Account Checker calls this for Search."""
     _log(
         None,
         f"Waiting for button index {index} in {selector!r} labeled "
@@ -333,6 +356,7 @@ def _click_button_at_index_with_text(
     )
 
     def find_button(current_driver):
+        """Poll the indexed button until it is visible and enabled; WebDriverWait invokes this callback."""
         buttons = current_driver.find_elements(By.CSS_SELECTOR, selector)
         if len(buttons) <= index:
             return False
@@ -353,7 +377,7 @@ def _click_button_at_index_with_text(
 
 
 def handle_alert(driver, timeout=1):
-    """Accept a browser alert if one appears within the timeout."""
+    """Accept a pending browser alert; account status flow uses it to handle UTS confirmation dialogs."""
     try:
         alert = WebDriverWait(driver, timeout).until(EC.alert_is_present())
     except TimeoutException:
@@ -368,6 +392,7 @@ def handle_alert(driver, timeout=1):
 # then update the status/branch/officer fields only when the requested values differ.
 # -----------------------------------------------------------------------------
 def _read_customer_details(driver):
+    """Read current maker values for comparison; _run_maker_row calls this before deciding which fields to edit."""
     _log(None, "Reading current customer status, branch, officer, and segment.")
     details = {}
     for key, element_id in {
@@ -382,6 +407,7 @@ def _read_customer_details(driver):
 
 
 def _set_customer_segment(driver, value):
+    """Map and select the supported segment option; _run_maker_row calls this only when segment changes."""
     target = _customer_segment_target(value)
     if target is None:
         return
@@ -392,7 +418,8 @@ def _set_customer_segment(driver, value):
 
 
 def _customer_segment_target(value):
-    segment_value = normalize(value)
+    """Convert formatted workbook segment labels to UTS targets before Maker starts browser edits."""
+    segment_value = _normalize_header(value)
     if not segment_value:
         return None
     normalized = {
@@ -409,6 +436,7 @@ def _customer_segment_target(value):
 
 
 def _search_customer_maker(driver, cif):
+    """Enter and verify a CIF, click Go, and open its result; _run_maker_row calls this before reading values."""
     _log(None, f"Customer Maker: searching CIF {cif!r}.")
     _switch_to_details(driver)
     expected_cif = str(cif or "").strip()
@@ -456,10 +484,20 @@ def _search_customer_maker(driver, cif):
 
 
 def _run_maker_row(driver, values):
+    """Process one customer Maker row: find, compare, edit only changed fields, save, and verify."""
     cif, requested_status, requested_branch, requested_officer, requested_segment = values
     _log(None, f"Customer Maker requested values: {values!r}.")
     if normalize(requested_segment):
-        _customer_segment_target(requested_segment)
+        _log(
+            None,
+            f"Validating Customer Segment {requested_segment!r} before CIF search.",
+        )
+        segment_target = _customer_segment_target(requested_segment)
+        _log(
+            None,
+            f"Customer Segment {requested_segment!r} is accepted as {segment_target}; "
+            "continuing to CIF search.",
+        )
 
     _search_customer_maker(driver, cif)
     current = _read_customer_details(driver)
@@ -538,6 +576,7 @@ def _run_maker_row(driver, values):
 # This flow handles account record changes and status transitions before saving.
 # -----------------------------------------------------------------------------
 def _account_action_link(driver, index):
+    """Return an indexed Account Maker action link; the account flow uses stable parent-relative links."""
     parent = driver.find_element(By.CSS_SELECTOR, ".de_but")
     links = parent.find_elements(By.TAG_NAME, "a")
     if len(links) <= index:
@@ -551,6 +590,7 @@ def _account_action_link(driver, index):
 
 
 def _search_account_maker(driver, account_number):
+    """Search and open an account record; _run_account_maker_row calls this before reading current values."""
     _log(None, f"Account Maker: searching account {account_number!r}.")
     _switch_to_details(driver)
     search_input = _wait_element(driver, By.ID, "SEARCH_TEXT")
@@ -571,6 +611,7 @@ def _search_account_maker(driver, account_number):
 
 
 def _read_account_details(driver):
+    """Read account status and branch for comparison; called by _run_account_maker_row before edits."""
     _log(None, "Reading current account status and branch.")
     details = {
         "status": _wait_element(
@@ -585,6 +626,7 @@ def _read_account_details(driver):
 
 
 def _submit_account_status(driver, status):
+    """Submit one status-dialog choice and handle alerts; _change_account_status calls it for each transition."""
     _log(None, f"Opening account status dialog; requested status={status!r}.")
     modal = _wait_element(driver, By.NAME, "myframe__1")
     driver.switch_to.frame(modal)
@@ -618,6 +660,7 @@ def _submit_account_status(driver, status):
 
 
 def _change_account_status(driver, current_status, requested_status):
+    """Apply UTS status transitions, including the required DMI step before reopening a closed account."""
     _log(
         None,
         f"Changing account status from {current_status!r} to {requested_status!r}.",
@@ -633,6 +676,7 @@ def _change_account_status(driver, current_status, requested_status):
 
 
 def _run_account_maker_row(driver, values):
+    """Process one Account Maker row by searching, comparing, and changing only requested fields."""
     account_number, requested_status, requested_branch = values[:3]
     _log(None, f"Account Maker requested values: {values!r}.")
     _search_account_maker(driver, account_number)
@@ -682,6 +726,7 @@ def _run_account_maker_row(driver, values):
 # detail screen, and decides whether the record matches the workbook expectations.
 # -----------------------------------------------------------------------------
 def _open_checker_record(driver, cif, rel_id=None):
+    """Search and open one Customer Checker record; _run_checker_row calls this before comparison."""
     _log(None, f"Customer Checker: searching by CIF={cif!r}, Rel_ID={rel_id!r}.")
     _switch_to_details(driver)
     _click_selector_with_text(
@@ -735,6 +780,7 @@ def _open_checker_record(driver, cif, rel_id=None):
 
 
 def _click_refresh_if_present(driver):
+    """Refresh an empty checker result page when UTS offers Refresh; checker searches call this on no result."""
     for button in driver.find_elements(By.CSS_SELECTOR, ".btn.toggleButton"):
         if normalize(button.text) == "REFRESH":
             button.click()
@@ -743,6 +789,7 @@ def _click_refresh_if_present(driver):
 
 
 def _read_checker_record(driver, expected_values):
+    """Compare Customer Checker values with workbook expectations; _run_checker_row calls this before approval."""
     _log(None, f"Reading Customer Checker record; expected values={expected_values!r}.")
     _switch_to_details(driver)
     modal = _wait_element(driver, By.NAME, "myframe__1")
@@ -790,6 +837,7 @@ def _read_checker_record(driver, expected_values):
 
 
 def _approve_customer_checker_record(driver):
+    """Close and approve a matched customer; _run_checker_row calls this only after a clean comparison."""
     _log(None, "Customer Checker matched; starting close-and-approve steps.")
     _switch_to_details(driver)
     _click_parent_link(
@@ -809,6 +857,7 @@ def _approve_customer_checker_record(driver):
 # approval/undo recommendation checks.
 # -----------------------------------------------------------------------------
 def _open_account_checker_record(driver, account_number):
+    """Search and open an Account Checker record; _run_account_checker_row calls this before comparison."""
     _log(None, f"Account Checker: searching account {account_number!r}.")
     _switch_to_details(driver)
     _click_button_at_index_with_text(
@@ -851,11 +900,13 @@ def _open_account_checker_record(driver, account_number):
 
 
 def _is_red_css_color(color):
+    """Recognize UTS's red-highlight CSS formats; account checker uses this to infer approval/undo guidance."""
     normalized_color = normalize(color).replace(" ", "")
     return normalized_color in {"RED", "#FF0000", "RGB(255,0,0)", "RGBA(255,0,0,1)"}
 
 
 def _read_account_checker_record(driver, expected_values):
+    """Compare account values and derive the manual approval/undo recommendation for its row processor."""
     _log(None, f"Reading Account Checker record; expected values={expected_values!r}.")
     _switch_to_details(driver)
     modal = _wait_element(driver, By.NAME, "myframe__1")
@@ -912,6 +963,7 @@ def _read_account_checker_record(driver, expected_values):
 # Each function receives the Excel row values and executes a single maker/checker step.
 # -----------------------------------------------------------------------------
 def _run_checker_row(driver, values):
+    """Process one Customer Checker row and approve only when the record opens and all values match."""
     _log(None, f"Customer Checker row values: {values!r}.")
     rel_id, cif = values[:2]
     expected_values = {
@@ -930,6 +982,7 @@ def _run_checker_row(driver, values):
 
 
 def _run_account_checker_row(driver, values):
+    """Process one Account Checker row; return not-found or delegate comparison to the account reader."""
     _log(None, f"Account Checker row values: {values!r}.")
     expected_values = {"status": values[1], "branch": values[2]}
     if not _open_account_checker_record(driver, values[0]):
@@ -943,7 +996,7 @@ def _run_account_checker_row(driver, values):
 # executes the appropriate maker/checker row processor, writes the result, and saves.
 # -----------------------------------------------------------------------------
 def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=None):
-    """Run a customer or account maker/checker workflow from its Excel rows."""
+    """Entry point: select UTS, dispatch each workbook row to its mode processor, and save row results."""
     mode = mode.lower().strip()
     if mode not in {"maker", "checker", "account_maker", "account_checker"}:
         raise ValueError("mode must be maker, checker, account_maker, or account_checker")
@@ -1014,6 +1067,7 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
 
 
 def run_customer_workflow(driver, workbook_path, mode, log_callback=None, stop_event=None):
+    """Backward-compatible customer-only entry point; validates mode then delegates to run_uts_workflow."""
     mode = str(mode).strip().lower()
     if mode not in {"maker", "checker"}:
         raise ValueError("mode must be 'maker' or 'checker'")
