@@ -304,6 +304,54 @@ def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", t
     return button
 
 
+def _click_selector_with_text(driver, selector, expected_text, timeout=15):
+    _log(
+        None,
+        f"Waiting for button {selector!r} labeled {expected_text!r}.",
+    )
+    button = WebDriverWait(driver, timeout).until(
+        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+    )
+    actual_text = normalize(button.text)
+    if actual_text != normalize(expected_text):
+        raise NoSuchElementException(
+            f"Button {selector!r} was expected to say {expected_text!r}, "
+            f"but its text is {button.text.strip()!r}."
+        )
+    _log(None, f"Verified and clicked button labeled {button.text.strip()!r}.")
+    button.click()
+    return button
+
+
+def _click_button_at_index_with_text(
+    driver, selector, index, expected_text, timeout=15
+):
+    _log(
+        None,
+        f"Waiting for button index {index} in {selector!r} labeled "
+        f"{expected_text!r}.",
+    )
+
+    def find_button(current_driver):
+        buttons = current_driver.find_elements(By.CSS_SELECTOR, selector)
+        if len(buttons) <= index:
+            return False
+        button = buttons[index]
+        if button.is_displayed() and button.is_enabled():
+            return button
+        return False
+
+    button = WebDriverWait(driver, timeout).until(find_button)
+    if normalize(button.text) != normalize(expected_text):
+        raise NoSuchElementException(
+            f"Button index {index} in {selector!r} was expected to say "
+            f"{expected_text!r}, but its text is {button.text.strip()!r}."
+        )
+    _log(None, f"Verified button index {index} text {button.text.strip()!r}; clicking.")
+    button.click()
+    return button
+
+
 def handle_alert(driver, timeout=1):
     """Accept a browser alert if one appears within the timeout."""
     try:
@@ -363,21 +411,47 @@ def _customer_segment_target(value):
 def _search_customer_maker(driver, cif):
     _log(None, f"Customer Maker: searching CIF {cif!r}.")
     _switch_to_details(driver)
-    search_input = _wait_element(driver, By.ID, "SEARCH_TEXT")
+    expected_cif = str(cif or "").strip()
+    if not expected_cif:
+        raise ValueError("Customer Maker row is missing CIF_Number.")
+    _log(None, "Waiting for the Customer Maker CIF search field to be clickable.")
+    search_input = WebDriverWait(driver, 15).until(
+        EC.element_to_be_clickable((By.ID, "SEARCH_TEXT"))
+    )
+    search_input.click()
     search_input.clear()
-    search_input.send_keys(str(cif).strip())
-    _log(None, "Entered CIF in SEARCH_TEXT.")
+    _log(None, f"Inputting CIF number {expected_cif} into SEARCH_TEXT.")
+    search_input.send_keys(expected_cif)
+    try:
+        WebDriverWait(driver, 5).until(
+            lambda _: search_input.get_attribute("value") == expected_cif
+        )
+    except TimeoutException as error:
+        actual_cif = search_input.get_attribute("value")
+        _log(
+            None,
+            f"CIF entry verification failed: SEARCH_TEXT contains {actual_cif!r}.",
+        )
+        raise TimeoutException(
+            "Customer Maker could not verify CIF entry in SEARCH_TEXT; "
+            f"expected {expected_cif!r}, found {actual_cif!r}. "
+            "the Go button was not clicked."
+        ) from error
+    _log(None, f"Verified CIF number {expected_cif} in SEARCH_TEXT.")
+    _log(None, f"Clicking Go button for CIF number {expected_cif}.")
     _click_element(
         driver,
         By.CSS_SELECTOR,
         "#container > section > div > div > form > div:nth-child(4) > table > "
         "tbody > tr:nth-child(1) > td.td_search_btn > a:nth-child(1)",
     )
+    _log(None, f"Clicked Go button for CIF number {expected_cif}.")
 
     _switch_to_details(driver)
+    _log(None, f"Waiting for search result for CIF number {expected_cif}.")
     result = _wait_element(driver, By.ID, "SPAN_CUST_DETAIL_LIST_CUST_NO_0")
     result.click()
-    _log(None, "Opened the first matching customer record.")
+    _log(None, f"Opened the first matching customer record for CIF {expected_cif}.")
     _switch_to_details(driver)
 
 
@@ -610,7 +684,12 @@ def _run_account_maker_row(driver, values):
 def _open_checker_record(driver, cif, rel_id=None):
     _log(None, f"Customer Checker: searching by CIF={cif!r}, Rel_ID={rel_id!r}.")
     _switch_to_details(driver)
-    _click_button_by_text(driver, "Search")
+    _click_selector_with_text(
+        driver,
+        "#container > section > div > div > form > div:nth-child(2) > "
+        "div > a:nth-child(6)",
+        "Search",
+    )
 
     _switch_to_details(driver)
     modal = _wait_element(driver, By.NAME, "myframe__1")
@@ -732,7 +811,9 @@ def _approve_customer_checker_record(driver):
 def _open_account_checker_record(driver, account_number):
     _log(None, f"Account Checker: searching account {account_number!r}.")
     _switch_to_details(driver)
-    _click_button_by_text(driver, "Search")
+    _click_button_at_index_with_text(
+        driver, ".btn.toggleButton", 5, "Search"
+    )
     _log(None, "Opened Account Checker search dialog.")
 
     _switch_to_details(driver)
