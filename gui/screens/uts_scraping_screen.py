@@ -47,11 +47,12 @@ class UTSScrapingScreen(QWidget):
         heading.setStyleSheet("font-size: 22px; font-weight: 600;")
         instruction = QLabel(
             "Open UTS in the WebDriver browser, sign in, and navigate to the selected "
-            "customer or account maker/checker screen. Customer workflows read CIF/status/"
-            "branch/officer from B:E and write result/start/end to F:H (maker starts at "
-            "row 4; checker at row 5). Account workflows read account/status/branch from "
-            "B:D and write result/start/end to E:G (row 5 onward). Completed rows are "
-            "skipped. Checker approval/undo is reported for manual action."
+            "customer or account maker/checker screen. Customer workbooks use the row 5 "
+            "header and start data on row 6; account workbooks use the row 4 header and "
+            "start data on row 5. Customer checker rows may identify a record by CIF or "
+            "Rel_ID (CIF takes priority). Completed rows are skipped. Matching customer "
+            "checker records are closed and approved automatically; account checker "
+            "recommendations remain manual."
         )
         instruction.setWordWrap(True)
 
@@ -119,7 +120,7 @@ class UTSScrapingScreen(QWidget):
             self,
             "Select UTS input workbook",
             "",
-            "Excel workbooks (*.xlsx *.xlsm *xls)",
+            "Excel workbooks (*.xlsx *.xlsm)",
         )
         if file_path:
             self.file_entry.setText(file_path)

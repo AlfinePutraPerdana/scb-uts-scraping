@@ -1,0 +1,23 @@
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+
+# Virtual environment
+.env
+.env/
+venv/
+
+# Build & PyInstaller outputs
+build/
+dist/
+*.spec
+
+# Executables & archives
+*.exe
+*.zip
+*.7z
+msedgedriver.exe
+
+# Ignore text files, but keep requirements.txt
+*.txt
+!requirements.txt

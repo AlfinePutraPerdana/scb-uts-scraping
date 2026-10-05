@@ -4,7 +4,11 @@ import re
 from threading import Event
 
 import openpyxl
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    TimeoutException,
+    UnexpectedAlertPresentException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
@@ -16,6 +20,7 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 # -----------------------------------------------------------------------------
 FRAME_SELECTOR = "frame, iframe"
 INPUT_HEADER_ALIASES = {
+    1: {"RELID"},
     2: {"CIF", "CIFNO", "CIFNUMBER", "CUSTOMERNO", "CUSTOMERNUMBER", "CUSTOMERID"},
     3: {"STATUS", "CUSTOMERSTATUS", "CHANGESTATUS", "DESIREDSTATUS", "NEWSTATUS"},
     4: {"BRANCH", "BRANCHCODE", "DESIREDBRANCH", "NEWBRANCHCODE"},
@@ -33,29 +38,31 @@ INPUT_HEADER_ALIASES = {
     },
 }
 OUTPUT_HEADER_ALIASES = {
-    7: {"RESULT", "RESULTSTATUS", "PROCESSSTATUS", "PROCESSINGSTATUS", "SCRAPESTATUS", "STATUSMSG"},
-    8: {"START", "STARTTIME", "STARTDATETIME", "STARTTIMESTAMP", "PROCESSSTART"},
-    9: {"END", "ENDTIME", "ENDDATETIME", "ENDTIMESTAMP", "PROCESSEND"},
+    7: {"STATUSMSG"},
+    8: {"STARTDATE"},
+    9: {"ENDDATE"},
 }
 ACCOUNT_INPUT_HEADER_ALIASES = {
-    2: {"ACCOUNT", "ACCOUNTNO", "ACCOUNTNUMBER", "ACNO"},
+    1: {"RELID"},
+    2: {"ACCOUNT", "ACCOUNTNO", "ACCOUNTNUMBER", "PRODUCTACCOUNT", "ACNO"},
     3: {"STATUS", "CUSTOMERSTATUS", "CHANGESTATUS", "DESIREDSTATUS", "NEWSTATUS"},
     4: {"BRANCH", "BRANCHCODE", "DESIREDBRANCH", "NEWBRANCHCODE"},
 }
 ACCOUNT_OUTPUT_HEADER_ALIASES = {
-    5: {"RESULT", "RESULTSTATUS", "PROCESSSTATUS", "PROCESSINGSTATUS", "SCRAPESTATUS"},
-    6: {"START", "STARTTIME", "STARTDATETIME", "STARTTIMESTAMP", "PROCESSSTART"},
-    7: {"END", "ENDTIME", "ENDDATETIME", "ENDTIMESTAMP", "PROCESSEND"},
+    5: {"STATUSMSG"},
+    6: {"STARTDATE"},
+    7: {"ENDDATE"},
 }
 HEADER_NAMES = {
+    1: "Rel_ID",
     2: "CIF_Number",
     3: "Change_Status",
     4: "Branch_Code",
     5: "Officer_Code",
     6: "Customer_Segment",
-    7: "Result / Status_msg (or blank)",
-    8: "Start Time (or blank)",
-    9: "End Time (or blank)",
+    7: "Status_msg",
+    8: "Start_Date",
+    9: "End_Date",
 }
 
 
@@ -77,12 +84,13 @@ def validate_uts_workbook(workbook_path, mode):
     output_headers = ACCOUNT_OUTPUT_HEADER_ALIASES if is_account else OUTPUT_HEADER_ALIASES
     header_names = (
         {
-            2: "Account_Number",
+            1: "Rel_ID",
+            2: "Product_Account",
             3: "Change_Status",
             4: "Branch_Code",
-            5: "Result (or blank)",
-            6: "Start Time (or blank)",
-            7: "End Time (or blank)",
+            5: "Status_msg",
+            6: "Start_Date",
+            7: "End_Date",
         }
         if is_account
         else HEADER_NAMES
@@ -91,10 +99,11 @@ def validate_uts_workbook(workbook_path, mode):
     path = Path(workbook_path)
     if not path.is_file():
         return False, "Select an existing Excel workbook."
-    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xls"}:
-        return False, "The workbook must be an .xlsx, .xlsm, or .xls file."
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return False, "The workbook must be an .xlsx or .xlsm file."
 
-    first_data_row = 5 if is_account or mode == "checker" else 4
+    header_row = 4 if is_account else 5
+    first_data_row = header_row + 1
     keep_vba = path.suffix.lower() == ".xlsm"
     try:
         workbook = openpyxl.load_workbook(
@@ -105,39 +114,38 @@ def validate_uts_workbook(workbook_path, mode):
 
     try:
         worksheet = workbook.active
-        header_row = None
         expected_header_columns = set(input_headers) | set(output_headers)
-        for row_number in range(first_data_row - 1, 0, -1):
-            headers = {
-                column: _normalize_header(worksheet.cell(row_number, column).value)
-                for column in expected_header_columns
-            }
-            inputs_match = all(
-                headers[column] in aliases
-                for column, aliases in input_headers.items()
-            )
-            outputs_compatible = all(
-                not headers[column] or headers[column] in aliases
-                for column, aliases in output_headers.items()
-            )
-            if inputs_match and outputs_compatible:
-                header_row = row_number
-                break
-
-        if header_row is None:
+        headers = {
+            column: _normalize_header(worksheet.cell(header_row, column).value)
+            for column in expected_header_columns
+        }
+        inputs_match = all(
+            headers[column] in aliases
+            for column, aliases in input_headers.items()
+        )
+        outputs_match = all(
+            headers[column] in aliases
+            for column, aliases in output_headers.items()
+        )
+        if not inputs_match or not outputs_match:
             expected = ", ".join(
                 f"{chr(64 + column)}: {header_names[column]}"
                 for column in sorted(set(input_headers) | set(output_headers))
             )
             return False, (
-                f"No compatible header row found above row {first_data_row}. "
+                f"No compatible header row found on row {header_row}. "
                 f"Expected {expected}."
             )
 
-        if worksheet.cell(first_data_row, 2).value in (None, ""):
+        has_identifier = worksheet.cell(first_data_row, 2).value not in (None, "")
+        if not is_account and mode == "checker":
+            has_identifier = has_identifier or worksheet.cell(first_data_row, 1).value not in (None, "")
+        if not has_identifier:
+            identifier_name = "account number" if is_account else (
+                "CIF or Rel_ID" if mode == "checker" else "CIF"
+            )
             return False, (
-                f"No {'account number' if is_account else 'CIF'} was found in column B "
-                f"at the first {mode} data row "
+                f"No {identifier_name} was found at the first {mode} data row "
                 f"({first_data_row})."
             )
 
@@ -225,12 +233,18 @@ def _read_customer_details(driver):
 
 
 def _set_customer_segment(driver, value):
-    segment_value = normalize(value)
-    if not segment_value:
+    target = _customer_segment_target(value)
+    if target is None:
         return
-
     segment_select = _wait_element(driver, By.NAME, "CUST_DETAIL_GEN_CUST_SEG_CODE")
     select = Select(segment_select)
+    select.select_by_index(4 if target == "CB" else 20)
+
+
+def _customer_segment_target(value):
+    segment_value = normalize(value)
+    if not segment_value:
+        return None
     normalized = {
         "CB": "CB",
         "CUSTOMERBANKING": "CB",
@@ -241,11 +255,7 @@ def _set_customer_segment(driver, value):
     target = normalized.get(segment_value)
     if target is None:
         raise ValueError("ERROR_segment out of scope")
-
-    if target == "CB":
-        select.select_by_index(4)
-    else:
-        select.select_by_index(20)
+    return target
 
 
 def _search_customer_maker(driver, cif):
@@ -253,7 +263,12 @@ def _search_customer_maker(driver, cif):
     search_input = _wait_element(driver, By.ID, "SEARCH_TEXT")
     search_input.clear()
     search_input.send_keys(str(cif).strip())
-    _click_element(driver, By.CSS_SELECTOR, ".td_search_btn .btn.toggleButton")
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div > div > form > div:nth-child(4) > table > "
+        "tbody > tr:nth-child(1) > td.td_search_btn > a:nth-child(1)",
+    )
 
     _switch_to_details(driver)
     result = _wait_element(driver, By.ID, "SPAN_CUST_DETAIL_LIST_CUST_NO_0")
@@ -265,6 +280,8 @@ def _run_maker_row(driver, values):
     cif, requested_status, requested_branch, requested_officer, requested_segment = values
     _search_customer_maker(driver, cif)
     current = _read_customer_details(driver)
+    if normalize(requested_segment):
+        _customer_segment_target(requested_segment)
     requested = {
         "status": requested_status,
         "branch": requested_branch,
@@ -279,7 +296,12 @@ def _run_maker_row(driver, values):
     if not updates:
         return "No changes"
 
-    edit_link = _wait_element(driver, By.CSS_SELECTOR, ".td_serach_btn a")
+    edit_link = _wait_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div > div.hom_h > form > div:nth-child(2) > div > "
+        "table > tbody > tr:nth-child(1) > td > a:nth-child(1)",
+    )
     edit_link.click()
     _switch_to_details(driver)
 
@@ -297,7 +319,12 @@ def _run_maker_row(driver, values):
     if "customer_segment" in updates:
         _set_customer_segment(driver, updates["customer_segment"])
 
-    _click_element(driver, By.CSS_SELECTOR, ".td_serach_btn a")
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div > div.hom_h > form > div:nth-child(2) > div > "
+        "table > tbody > tr:nth-child(1) > td > a:nth-child(1)",
+    )
     return "Done"
 
 
@@ -306,7 +333,11 @@ def _run_maker_row(driver, values):
 # This flow handles account record changes and status transitions before saving.
 # -----------------------------------------------------------------------------
 def _account_action_link(driver, index):
-    links = driver.find_elements(By.CSS_SELECTOR, ".de_but a")
+    links = driver.find_elements(
+        By.CSS_SELECTOR,
+        "#container > section > div > div.hom_h > form > "
+        "div:nth-child(3) > div > a",
+    )
     if len(links) <= index:
         raise NoSuchElementException(f"Account action link {index} was not found")
     return links[index]
@@ -317,7 +348,12 @@ def _search_account_maker(driver, account_number):
     search_input = _wait_element(driver, By.ID, "SEARCH_TEXT")
     search_input.clear()
     search_input.send_keys(str(account_number).strip())
-    _click_element(driver, By.CSS_SELECTOR, ".td_search_btn .btn.toggleButton")
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div > div > form > div:nth-child(2) > table > "
+        "tbody > tr:nth-child(1) > td.td_search_btn > a:nth-child(1)",
+    )
 
     _switch_to_details(driver)
     _wait_element(driver, By.ID, "SPAN_ACCOUNT_LIST_ACA_AC_NO_0").click()
@@ -338,19 +374,26 @@ def _read_account_details(driver):
 def _submit_account_status(driver, status):
     modal = _wait_element(driver, By.NAME, "myframe__1")
     driver.switch_to.frame(modal)
-    status_select = _wait_element(driver, By.NAME, "new_cust_status_code")
+    status_select = _wait_element(driver, By.CSS_SELECTOR, "#fmStatus select")
     Select(status_select).select_by_visible_text(str(status).strip())
-    ok_button = next(
-        (
-            button
-            for button in driver.find_elements(By.CSS_SELECTOR, ".btn.toggleButton")
-            if normalize(button.text) == "OK"
-        ),
-        None,
-    )
-    if ok_button is None:
-        raise NoSuchElementException("Account status confirmation button was not found")
-    ok_button.click()
+    try:
+        _click_element(
+            driver, By.CSS_SELECTOR, "#fmStatus .ppw_foot_btn a:nth-child(1)"
+        )
+    except UnexpectedAlertPresentException:
+        alert = driver.switch_to.alert
+    else:
+        try:
+            alert = WebDriverWait(driver, 1).until(EC.alert_is_present())
+        except TimeoutException:
+            alert = None
+    if alert is not None:
+        alert_message = alert.text
+        alert.accept()
+        _click_element(
+            driver, By.CSS_SELECTOR, "#fmStatus .ppw_foot_btn a:nth-child(2)"
+        )
+        raise RuntimeError(f"Account status change cancelled: {alert_message}")
     driver.switch_to.default_content()
     _switch_to_details(driver)
     _wait_element(driver, By.ID, "SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE")
@@ -398,24 +441,27 @@ def _run_account_maker_row(driver, values):
 # This section opens a record in checker mode, reads the current values from the
 # detail screen, and decides whether the record matches the workbook expectations.
 # -----------------------------------------------------------------------------
-def _open_checker_record(driver, cif):
+def _open_checker_record(driver, cif, rel_id=None):
     _switch_to_details(driver)
-    search_buttons = driver.find_elements(By.CSS_SELECTOR, ".btn.toggleButton")
-    search_button = next(
-        (button for button in search_buttons if normalize(button.text) == "SEARCH"),
-        None,
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div > div > form > div:nth-child(2) > "
+        "div > a:nth-child(6)",
     )
-    if search_button is None:
-        raise NoSuchElementException("Checker Search button was not found")
-    search_button.click()
 
     _switch_to_details(driver)
     modal = _wait_element(driver, By.NAME, "myframe__1")
     driver.switch_to.frame(modal)
-    cif_input = _wait_element(driver, By.ID, "SEARCH_CUST_NO")
-    cif_input.clear()
-    cif_input.send_keys(str(cif).strip())
-    _click_element(driver, By.CSS_SELECTOR, ".btn.toggleButton")
+    if normalize(cif):
+        search_input = _wait_element(driver, By.ID, "SEARCH_CUST_NO")
+        search_value = cif
+    else:
+        search_input = _wait_element(driver, By.ID, "SEARCH_CUST_EBBS_CAT_NO")
+        search_value = rel_id
+    search_input.clear()
+    search_input.send_keys(str(search_value).strip())
+    _click_element(driver, By.CSS_SELECTOR, "nav > a:nth-child(1)")
     driver.switch_to.parent_frame()
 
     _switch_to_details(driver)
@@ -427,7 +473,11 @@ def _open_checker_record(driver, cif):
     if len(rows) <= 2:
         _click_refresh_if_present(driver)
         return False
-    links = rows[2].find_elements(By.CSS_SELECTOR, "td:nth-child(2) a")
+    links = driver.find_elements(
+        By.CSS_SELECTOR,
+        "#container > section > div > form > table > tbody > "
+        "tr.gridcolumneven > td:nth-child(2) > a",
+    )
     if not links:
         _click_refresh_if_present(driver)
         return False
@@ -457,15 +507,17 @@ def _read_checker_record(driver, expected_values):
     }
     mismatches = []
     fields = {
-        "change_status": "status",
-        "branch_code": "branch",
-        "officer_code": "officer",
-        "customer_segment": "customer_segment",
+        "Change_Status": ("change_status", "status"),
+        "Branch code": ("branch_code", "branch"),
+        "Officer code": ("officer_code", "officer"),
+        "Customer Segment": ("customer_segment", "customer_segment"),
     }
-    for column_name, field in fields.items():
+    for label, (column_name, field) in fields.items():
         expected = expected_values.get(column_name, "")
         if normalize(expected) and normalize(expected) != normalize(current[field]):
-            mismatches.append(column_name)
+            mismatches.append(
+                f"{label} {expected} found {current[field]} instead"
+            )
 
     close_buttons = driver.find_elements(By.CSS_SELECTOR, ".btn.toggleButton")
     for button in close_buttons:
@@ -475,11 +527,23 @@ def _read_checker_record(driver, expected_values):
     driver.switch_to.default_content()
 
     if mismatches:
-        return ", ".join(mismatches)
+        return "MISMATCH : " + "; ".join(mismatches)
+    return ""
 
-    # The source macro initializes hasOfficerCode=True, making its decision
-    # unconditional. Do not automate Approve/Undo until that rule is confirmed.
-    return "No mismatches - manual approval required"
+
+def _approve_customer_checker_record(driver):
+    _switch_to_details(driver)
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div.h_tab > div.hom_h > form > div > div > a",
+    )
+    _wait_element(driver, By.ID, "MarkDel").click()
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#container > section > div > div > form > div:nth-child(2) > div > a:nth-child(2)",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -589,16 +653,20 @@ def _read_account_checker_record(driver, expected_values):
 # Each function receives the Excel row values and executes a single maker/checker step.
 # -----------------------------------------------------------------------------
 def _run_checker_row(driver, values):
-    cif = values[0]
+    rel_id, cif = values[:2]
     expected_values = {
-        "change_status": values[1],
-        "branch_code": values[2],
-        "officer_code": values[3],
-        "customer_segment": values[4],
+        "change_status": values[2],
+        "branch_code": values[3],
+        "officer_code": values[4],
+        "customer_segment": values[5],
     }
-    if not _open_checker_record(driver, cif):
-        return "CIF Not Found"
-    return _read_checker_record(driver, expected_values)
+    if not _open_checker_record(driver, cif, rel_id):
+        return "CIF/Rel_ID Not Found"
+    result = _read_checker_record(driver, expected_values)
+    if result:
+        return result
+    _approve_customer_checker_record(driver)
+    return "Approved"
 
 
 def _run_account_checker_row(driver, values):
@@ -625,7 +693,7 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
     worksheet = workbook.active
     is_account = mode.startswith("account_")
     is_maker = mode in {"maker", "account_maker"}
-    first_row = 5 if is_account or not is_maker else 4
+    first_row = 5 if is_account else 6
     result_column, start_column, end_column = (5, 6, 7) if is_account else (7, 8, 9)
     processor = {
         "maker": _run_maker_row,
@@ -638,7 +706,8 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
     try:
         for row_number in range(first_row, worksheet.max_row + 1):
             cif = worksheet.cell(row_number, 2).value
-            if cif in (None, ""):
+            rel_id = worksheet.cell(row_number, 1).value
+            if cif in (None, "") and (is_account or is_maker or rel_id in (None, "")):
                 break
             if worksheet.cell(row_number, result_column).value not in (None, ""):
                 _log(log_callback, f"Row {row_number}: skipped (already has a result).")
@@ -649,14 +718,21 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
 
             worksheet.cell(row_number, start_column, datetime.now())
             try:
-                columns_to_read = range(2, 7) if not is_account else range(2, 6)
+                if is_account:
+                    columns_to_read = range(2, 6)
+                elif is_maker:
+                    columns_to_read = range(2, 7)
+                else:
+                    columns_to_read = range(1, 7)
                 values = [worksheet.cell(row_number, column).value for column in columns_to_read]
                 result = processor(driver, values)
                 worksheet.cell(row_number, result_column, result)
                 _log(log_callback, f"Row {row_number}: {result}")
             except Exception as error:
-                worksheet.cell(row_number, result_column, f"Error: {error}")
-                _log(log_callback, f"Row {row_number}: Error: {error}")
+                message = str(error)
+                result = message if message == "ERROR_segment out of scope" else f"Error: {message}"
+                worksheet.cell(row_number, result_column, result)
+                _log(log_callback, f"Row {row_number}: {result}")
             finally:
                 worksheet.cell(row_number, end_column, datetime.now())
                 workbook.save(path)
