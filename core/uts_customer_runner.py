@@ -555,7 +555,7 @@ def _run_maker_row(driver, values):
     _log(None, f"Customer Maker fields requiring updates: {updates!r}.")
     if not updates:
         _log(None, "Customer values already match; skipping edit.")
-        return "No changes"
+        return "Done"
 
     _log(None, "Opening Customer Maker edit form.")
     _click_parent_link(driver, ".td_serach_btn", 0, "Customer Edit")
@@ -737,7 +737,7 @@ def _run_account_maker_row(driver, values):
     _log(None, f"Account Maker fields requiring updates: {updates!r}.")
     if not updates:
         _log(None, "Account values already match; skipping edit.")
-        return "No changes"
+        return "Done"
 
     if "status" in updates:
         _change_account_status(driver, current["status"], updates["status"])
@@ -944,14 +944,8 @@ def _open_account_checker_record(driver, account_number):
     return True
 
 
-def _is_red_css_color(color):
-    """Recognize UTS's red-highlight CSS formats; account checker uses this to infer approval/undo guidance."""
-    normalized_color = normalize(color).replace(" ", "")
-    return normalized_color in {"RED", "#FF0000", "RGB(255,0,0)", "RGBA(255,0,0,1)"}
-
-
 def _read_account_checker_record(driver, expected_values):
-    """Compare account values and derive the manual approval/undo recommendation for its row processor."""
+    """Compare account values; _run_account_checker_row approves only after a clean comparison."""
     _log(None, f"Reading Account Checker record; expected values={expected_values!r}.")
     _switch_to_details(driver)
     modal = _wait_element(driver, By.NAME, "myframe__1")
@@ -980,26 +974,31 @@ def _read_account_checker_record(driver, expected_values):
         else:
             _log(None, f"Account Checker {column_name} is blank in workbook; ignored.")
 
-    approve_data = False
-    for label in driver.find_elements(By.CSS_SELECTOR, ".tablabel.th"):
-        fonts = label.find_elements(By.TAG_NAME, "font")
-        if not fonts:
-            continue
-        label_text = normalize(fonts[0].text)
-        if label_text in {"ACCOUNT STATUS", "BRANCH"} and _is_red_css_color(
-            fonts[0].value_of_css_property("color")
-        ):
-            approve_data = True
-
-    close_button = _wait_element(driver, By.CSS_SELECTOR, ".close")
-    close_button.click()
+    _click_element(
+        driver,
+        By.CSS_SELECTOR,
+        "#div_title_1 > button > span:nth-child(1)",
+    )
     driver.switch_to.default_content()
     if mismatches:
         _log(None, f"Account Checker mismatches found: {mismatches!r}.")
         return ", ".join(mismatches)
-    recommendation = "Approve" if approve_data else "Undo"
-    _log(None, f"Account Checker recommendation is {recommendation}; manual action required.")
-    return f"No mismatches - {recommendation} manually"
+    _log(None, "Account Checker values all match.")
+    return ""
+
+
+def _approve_account_checker_record(driver):
+    """Approve a matching Account Checker record; _run_account_checker_row calls this after comparison."""
+    _log(None, "Account Checker matched; checking MarkDel and clicking Approve.")
+    _switch_to_details(driver)
+    _wait_element(driver, By.ID, "MarkDel").click()
+    _log(None, "Checked Account Checker MarkDel checklist.")
+    _click_selector_with_text(
+        driver,
+        "#container > section > div > div > form > div:nth-child(2) > "
+        "div > a:nth-child(2)",
+        "Approve",
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -1027,12 +1026,16 @@ def _run_checker_row(driver, values):
 
 
 def _run_account_checker_row(driver, values):
-    """Process one Account Checker row; return not-found or delegate comparison to the account reader."""
+    """Approve a matching Account Checker row; mismatches and missing records remain retryable."""
     _log(None, f"Account Checker row values: {values!r}.")
     expected_values = {"status": values[1], "branch": values[2]}
     if not _open_account_checker_record(driver, values[0]):
         return "Account Not Found"
-    return _read_account_checker_record(driver, expected_values)
+    result = _read_account_checker_record(driver, expected_values)
+    if result:
+        return result
+    _approve_account_checker_record(driver)
+    return "Approved"
 
 
 # -----------------------------------------------------------------------------
@@ -1040,7 +1043,13 @@ def _run_account_checker_row(driver, values):
 # This is the main orchestration loop: it reads each Excel row, marks start time,
 # executes the appropriate maker/checker row processor, writes the result, and saves.
 # -----------------------------------------------------------------------------
-def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=None):
+def run_uts_workflow(
+    driver,
+    workbook_path,
+    mode,
+    log_callback=None,
+    stop_event=None,
+):
     """Entry point: select UTS, dispatch each workbook row to its mode processor, and save row results."""
     mode = mode.lower().strip()
     if mode not in {"maker", "checker", "account_maker", "account_checker"}:
@@ -1052,6 +1061,7 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
     worksheet = workbook.active
     is_account = mode.startswith("account_")
     is_maker = mode in {"maker", "account_maker"}
+    completed_result = "Done" if is_maker else "Approved"
     first_row = 5 if is_account else 6
     result_column, start_column, end_column = (5, 6, 7) if is_account else (7, 8, 9)
     processor = {
@@ -1062,6 +1072,7 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
     }[mode]
     stop_event = stop_event or Event()
     log_token = _WORKFLOW_LOG_CALLBACK.set(log_callback)
+    all_rows_processed = True
 
     try:
         _log(None, f"Starting UTS workflow mode={mode!r}, workbook={str(path)!r}.")
@@ -1071,11 +1082,16 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
             rel_id = worksheet.cell(row_number, 1).value
             if cif in (None, "") and (is_account or is_maker or rel_id in (None, "")):
                 break
-            if worksheet.cell(row_number, result_column).value not in (None, ""):
-                _log(log_callback, f"Row {row_number}: skipped (already has a result).")
+            existing_result = worksheet.cell(row_number, result_column).value
+            if normalize(existing_result) == completed_result.upper():
+                _log(
+                    log_callback,
+                    f"Row {row_number}: skipped (already marked {completed_result}).",
+                )
                 continue
             if stop_event.is_set():
                 _log(log_callback, "Stop requested; leaving remaining rows untouched.")
+                all_rows_processed = False
                 break
 
             _log(None, f"Starting row {row_number}; identifier={cif!r}, Rel_ID={rel_id!r}.")
@@ -1109,13 +1125,24 @@ def run_uts_workflow(driver, workbook_path, mode, log_callback=None, stop_event=
     finally:
         workbook.close()
         _WORKFLOW_LOG_CALLBACK.reset(log_token)
+    return all_rows_processed
 
 
-def run_customer_workflow(driver, workbook_path, mode, log_callback=None, stop_event=None):
+def run_customer_workflow(
+    driver,
+    workbook_path,
+    mode,
+    log_callback=None,
+    stop_event=None,
+):
     """Backward-compatible customer-only entry point; validates mode then delegates to run_uts_workflow."""
     mode = str(mode).strip().lower()
     if mode not in {"maker", "checker"}:
         raise ValueError("mode must be 'maker' or 'checker'")
     return run_uts_workflow(
-        driver, workbook_path, mode, log_callback=log_callback, stop_event=stop_event
+        driver,
+        workbook_path,
+        mode,
+        log_callback=log_callback,
+        stop_event=stop_event,
     )

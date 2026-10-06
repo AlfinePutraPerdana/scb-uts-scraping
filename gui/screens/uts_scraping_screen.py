@@ -26,7 +26,7 @@ class UTSScrapingScreen(QWidget):
     log_message = Signal(str)
     browser_started = Signal()
     browser_failed = Signal(str)
-    workflow_finished = Signal()
+    workflow_finished = Signal(bool)
     browser_closed = Signal()
 
     def __init__(self, driver_path):
@@ -51,9 +51,9 @@ class UTSScrapingScreen(QWidget):
             "customer or account maker/checker screen. Customer workbooks use the row 5 "
             "header and start data on row 6; account workbooks use the row 4 header and "
             "start data on row 5. Customer checker rows may identify a record by CIF or "
-            "Rel_ID (CIF takes priority). Completed rows are skipped. Matching customer "
-            "checker records are closed and approved automatically; account checker "
-            "recommendations remain manual."
+            "Rel_ID (CIF takes priority). Rows marked Done (maker) or Approved (checker) "
+            "are skipped when resuming. A completion alert appears after all rows are processed. "
+            "Matching customer and account checker records are closed and approved automatically."
         )
         instruction.setWordWrap(True)
 
@@ -214,11 +214,12 @@ class UTSScrapingScreen(QWidget):
         ).start()
 
     def _run_workflow(self, workbook_path, mode):
+        all_rows_processed = False
         try:
             self.log_message.emit(
                 f"Starting {mode} workflow with workbook {workbook_path!r}."
             )
-            run_uts_workflow(
+            all_rows_processed = run_uts_workflow(
                 self.scraper.driver,
                 workbook_path,
                 mode,
@@ -229,11 +230,21 @@ class UTSScrapingScreen(QWidget):
             self.log_message.emit(f"Workflow stopped: {error}")
             self.log_message.emit(f"Workflow traceback:\n{traceback.format_exc()}")
         finally:
-            self.workflow_finished.emit()
+            self.workflow_finished.emit(all_rows_processed)
 
-    def _on_workflow_finished(self):
+    def _on_workflow_finished(self, all_rows_processed):
         self._running = False
-        self.status_label.setText("Workflow finished. Check the log and workbook results.")
+        if all_rows_processed:
+            self.status_label.setText("Process done. Check the workbook results.")
+            QMessageBox.information(
+                self,
+                "Process done",
+                "All rows have been processed. Check the Excel workbook for results.",
+            )
+        else:
+            self.status_label.setText(
+                "Workflow stopped before all rows were processed. Check the log and workbook."
+            )
         self.start_button.setEnabled(bool(self.scraper.driver))
         self.stop_button.setEnabled(False)
         self.close_browser_button.setEnabled(bool(self.scraper.driver))
