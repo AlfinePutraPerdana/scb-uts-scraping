@@ -27,6 +27,14 @@ from selenium.webdriver.support.ui import Select, WebDriverWait
 FRAME_SELECTOR = "frame, iframe"
 UTS_WINDOW_TITLE = "Unit Trust System"
 _WORKFLOW_LOG_CALLBACK = ContextVar("uts_workflow_log_callback", default=None)
+CUSTOMER_SEGMENT_TARGETS = {
+    "CB": "CB",
+    "CUSTOMERBANKING": "CB",
+    "CUSTOMERBANKINGCB": "CB",
+    "PRIORITY": "PRIORITY",
+    "PRIORITYBANKING": "PRIORITY",
+    "PRIORITYCUSTOMER": "PRIORITY",
+}
 INPUT_HEADER_ALIASES = {
     1: {"RELID"},
     2: {"CIF", "CIFNO", "CIFNUMBER", "CUSTOMERNO", "CUSTOMERNUMBER", "CUSTOMERID"},
@@ -422,17 +430,15 @@ def _customer_segment_target(value):
     segment_value = _normalize_header(value)
     if not segment_value:
         return None
-    normalized = {
-        "CB": "CB",
-        "CUSTOMERBANKING": "CB",
-        "CUSTOMERBANKINGCB": "CB",
-        "PRIORITY": "PRIORITY",
-        "PRIORITYCUSTOMER": "PRIORITY",
-    }
-    target = normalized.get(segment_value)
+    target = CUSTOMER_SEGMENT_TARGETS.get(segment_value)
     if target is None:
         raise ValueError("ERROR_segment out of scope")
     return target
+
+
+def _customer_segment_matches(value, target):
+    """Match a displayed UTS segment label against its canonical maker target."""
+    return CUSTOMER_SEGMENT_TARGETS.get(_normalize_header(value)) == target
 
 
 def _search_customer_maker(driver, cif):
@@ -467,12 +473,30 @@ def _search_customer_maker(driver, cif):
         ) from error
     _log(None, f"Verified CIF number {expected_cif} in SEARCH_TEXT.")
     _log(None, f"Clicking Go button for CIF number {expected_cif}.")
-    _click_element(
-        driver,
-        By.CSS_SELECTOR,
-        "#container > section > div > div > form > div:nth-child(4) > table > "
-        "tbody > tr:nth-child(1) > td.td_search_btn > a:nth-child(1)",
-    )
+    search_form = search_input.find_element(By.XPATH, "ancestor::form[1]")
+
+    def find_search_button(_):
+        buttons = search_form.find_elements(
+            By.CSS_SELECTOR, "td.td_search_btn > a:nth-child(1)"
+        )
+        return next(
+            (
+                button
+                for button in buttons
+                if button.is_displayed() and button.is_enabled()
+            ),
+            False,
+        )
+
+    try:
+        search_button = WebDriverWait(driver, 15).until(find_search_button)
+    except TimeoutException as error:
+        raise TimeoutException(
+            f"Customer Maker could not find a visible, enabled Go button in the "
+            f"SEARCH_TEXT form for CIF {expected_cif!r}."
+        ) from error
+    search_button.click()
+    _log(None, "Clicked the visible, enabled Go button in the SEARCH_TEXT form.")
     _log(None, f"Clicked Go button for CIF number {expected_cif}.")
 
     _switch_to_details(driver)
@@ -510,7 +534,12 @@ def _run_maker_row(driver, values):
     updates = {
         key: value
         for key, value in requested.items()
-        if normalize(value) and normalize(value) != normalize(current[key])
+        if normalize(value)
+        and (
+            not _customer_segment_matches(current[key], segment_target)
+            if key == "customer_segment"
+            else normalize(value) != normalize(current[key])
+        )
     }
     _log(None, f"Customer Maker fields requiring updates: {updates!r}.")
     if not updates:
@@ -561,7 +590,12 @@ def _run_maker_row(driver, values):
     }
     for key, expected in updates.items():
         actual = _wait_element(driver, By.ID, display_field_ids[key]).text.strip()
-        if normalize(actual) != normalize(expected):
+        matches = (
+            _customer_segment_matches(actual, segment_target)
+            if key == "customer_segment"
+            else normalize(actual) == normalize(expected)
+        )
+        if not matches:
             raise RuntimeError(
                 f"Customer save verification failed for {key}: "
                 f"expected {expected!r}, found {actual!r}."
