@@ -473,30 +473,41 @@ def _search_customer_maker(driver, cif):
         ) from error
     _log(None, f"Verified CIF number {expected_cif} in SEARCH_TEXT.")
     _log(None, f"Clicking Go button for CIF number {expected_cif}.")
-    search_form = search_input.find_element(By.XPATH, "ancestor::form[1]")
+    search_button_locators = (
+        (
+            By.CSS_SELECTOR,
+            "#divSearch > table > tbody > tr:nth-child(1) > "
+            "td.td_search_btn > a:nth-child(1)",
+        ),
+        (
+            By.CSS_SELECTOR,
+            "#container > section > div > div > form > div:nth-child(4) > "
+            "table > tbody > tr:nth-child(1) > td.td_search_btn > a:nth-child(1)",
+        ),
+    )
 
     def find_search_button(_):
-        buttons = search_form.find_elements(
+        for by, locator in search_button_locators:
+            for button in driver.find_elements(by, locator):
+                if button.is_displayed() and button.is_enabled():
+                    return button
+        search_form = search_input.find_element(By.XPATH, "ancestor::form[1]")
+        for button in search_form.find_elements(
             By.CSS_SELECTOR, "td.td_search_btn > a:nth-child(1)"
-        )
-        return next(
-            (
-                button
-                for button in buttons
-                if button.is_displayed() and button.is_enabled()
-            ),
-            False,
-        )
+        ):
+            if button.is_displayed() and button.is_enabled():
+                return button
+        return False
 
     try:
         search_button = WebDriverWait(driver, 15).until(find_search_button)
     except TimeoutException as error:
         raise TimeoutException(
-            f"Customer Maker could not find a visible, enabled Go button in the "
-            f"SEARCH_TEXT form for CIF {expected_cif!r}."
+            f"Customer Maker could not find a visible, enabled Go button for "
+            f"CIF {expected_cif!r} using the initial or post-row search controls."
         ) from error
     search_button.click()
-    _log(None, "Clicked the visible, enabled Go button in the SEARCH_TEXT form.")
+    _log(None, "Clicked the visible, enabled Go button for the current CIF search.")
     _log(None, f"Clicked Go button for CIF number {expected_cif}.")
 
     _switch_to_details(driver)
