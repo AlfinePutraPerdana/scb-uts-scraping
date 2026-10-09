@@ -334,10 +334,10 @@ def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", t
 
 
 def _click_selector_with_text(driver, selector, expected_text, timeout=15):
-    """Click a documented selector only after checking its label; Customer Checker uses this for Search."""
+    """Click a documented selector only after checking its normalized label."""
     _log(
         None,
-        f"Waiting for button {selector!r} labeled {expected_text!r}.",
+        f"Waiting for element {selector!r} labeled {expected_text!r}.",
     )
     button = WebDriverWait(driver, timeout).until(
         EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
@@ -345,10 +345,10 @@ def _click_selector_with_text(driver, selector, expected_text, timeout=15):
     actual_text = normalize(button.text)
     if actual_text != normalize(expected_text):
         raise NoSuchElementException(
-            f"Button {selector!r} was expected to say {expected_text!r}, "
+            f"Element {selector!r} was expected to say {expected_text!r}, "
             f"but its text is {button.text.strip()!r}."
         )
-    _log(None, f"Verified and clicked button labeled {button.text.strip()!r}.")
+    _log(None, f"Verified and clicked element labeled {button.text.strip()!r}.")
     button.click()
     return button
 
@@ -885,15 +885,26 @@ def _approve_customer_checker_record(driver):
     """Close and approve a matched customer; _run_checker_row calls this only after a clean comparison."""
     _log(None, "Customer Checker matched; starting close-and-approve steps.")
     _switch_to_details(driver)
-    _click_parent_link(
+    _click_selector_with_text(
         driver,
-        "#container > section > div.h_tab > div.hom_h > form > div > div",
-        0,
-        "Customer Close",
+        "#container > section > div.h_tab > div.hom_h > form > div > div > a",
+        "Close",
     )
-    _wait_element(driver, By.ID, "MarkDel").click()
+    mark_del = _wait_element(driver, By.ID, "MarkDel")
+    if mark_del.get_attribute("type") != "checkbox":
+        raise RuntimeError("Customer Checker MarkDel control is not a checkbox.")
+    if not mark_del.is_selected():
+        _log(None, "MarkDel is unchecked; checking it before approval.")
+        mark_del.click()
+    if not mark_del.is_selected():
+        raise RuntimeError("Customer Checker MarkDel checkbox did not become checked.")
     _log(None, "Checked MarkDel checklist.")
-    _click_button_by_text(driver, "Approve")
+    _click_selector_with_text(
+        driver,
+        "#container > section > div > div > form > div:nth-child(2) > "
+        "div > a:nth-child(2)",
+        "Approve",
+    )
 
 
 # -----------------------------------------------------------------------------
