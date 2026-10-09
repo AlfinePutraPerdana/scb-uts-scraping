@@ -985,11 +985,21 @@ def _read_account_checker_record(driver, expected_values):
         else:
             _log(None, f"Account Checker {column_name} is blank in workbook; ignored.")
 
-    _click_element(
-        driver,
-        By.CSS_SELECTOR,
-        "#div_title_1 > button > span:nth-child(1)",
+    close_selector = "#div_title_1 > button > span:nth-child(1)"
+    _log(None, "Waiting for the Account Checker modal close control to become visible.")
+    close_control = WebDriverWait(driver, 15).until(
+        EC.visibility_of_element_located((By.CSS_SELECTOR, close_selector))
     )
+    close_button = close_control.find_element(By.XPATH, "..")
+    WebDriverWait(driver, 15).until(
+        lambda _: close_button.is_displayed() and close_button.is_enabled()
+    )
+    _log(None, "Account Checker modal close control is visible; clicking its button.")
+    close_button.click()
+    WebDriverWait(driver, 15).until(
+        EC.invisibility_of_element_located((By.CSS_SELECTOR, close_selector))
+    )
+    _log(None, "Account Checker data modal is closed.")
     driver.switch_to.default_content()
     if mismatches:
         _log(None, f"Account Checker mismatches found: {mismatches!r}.")
