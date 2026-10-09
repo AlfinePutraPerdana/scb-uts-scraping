@@ -11,8 +11,11 @@ from selenium.common.exceptions import (
     NoSuchWindowException,
     TimeoutException,
     UnexpectedAlertPresentException,
+    WebDriverException,
 )
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
@@ -268,10 +271,18 @@ def _wait_element(driver, by, value, timeout=15):
 def _click_element(driver, by, value, timeout=15):
     """Wait for and click a locator; called where a specific CSS/ID control drives the next workflow step."""
     _log(None, f"Waiting for clickable element {by}={value!r}.")
-    element = WebDriverWait(driver, timeout).until(
-        EC.element_to_be_clickable((by, value))
-    )
-    element.click()
+    try:
+        element = WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable((by, value))
+        )
+    except WebDriverException as error:
+        _log(None, f"NOT CLICKED: element {by}={value!r} was not found/clickable: {error}")
+        raise
+    try:
+        element.click()
+    except WebDriverException as error:
+        _log(None, f"CLICK FAILED: element {by}={value!r}: {error}")
+        raise
     _log(None, f"Clicked element {by}={value!r}.")
     return element
 
@@ -294,14 +305,22 @@ def _click_parent_link(driver, parent_selector, index, action, timeout=15):
             return link
         return False
 
-    link = WebDriverWait(driver, timeout).until(find_link)
+    try:
+        link = WebDriverWait(driver, timeout).until(find_link)
+    except WebDriverException as error:
+        _log(None, f"NOT CLICKED: {action} link {index} was not found/clickable: {error}")
+        raise
     _log(None, f"{action} link text: {link.text.strip()!r}.")
     _log(None, f"Scrolling {action} link to the center of the viewport before clicking.")
     driver.execute_script(
         "arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});",
         link,
     )
-    link.click()
+    try:
+        link.click()
+    except WebDriverException as error:
+        _log(None, f"CLICK FAILED: {action} link {index}: {error}")
+        raise
     _log(None, f"Clicked {action} link in parent {parent_selector!r}.")
     return link
 
@@ -322,14 +341,31 @@ def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", t
         ]
         return buttons or False
 
-    buttons = WebDriverWait(driver, timeout).until(find_buttons)
+    try:
+        buttons = WebDriverWait(driver, timeout).until(find_buttons)
+    except WebDriverException as error:
+        _log(
+            None,
+            f"NOT CLICKED: button labeled {expected_text!r} "
+            f"was not found/clickable: {error}",
+        )
+        raise
     if len(buttons) != 1:
+        _log(
+            None,
+            f"NOT CLICKED: expected one button labeled {expected_text!r}, "
+            f"found {len(buttons)}.",
+        )
         raise NoSuchElementException(
             f"Expected one button labeled {expected_text!r}, found {len(buttons)}."
         )
     button = buttons[0]
+    try:
+        button.click()
+    except WebDriverException as error:
+        _log(None, f"CLICK FAILED: button labeled {expected_text!r}: {error}")
+        raise
     _log(None, f"Clicked button labeled {button.text.strip()!r}.")
-    button.click()
     return button
 
 
@@ -339,17 +375,34 @@ def _click_selector_with_text(driver, selector, expected_text, timeout=15):
         None,
         f"Waiting for element {selector!r} labeled {expected_text!r}.",
     )
-    button = WebDriverWait(driver, timeout).until(
-        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-    )
+    try:
+        button = WebDriverWait(driver, timeout).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+        )
+    except WebDriverException as error:
+        _log(
+            None,
+            f"NOT CLICKED: element {selector!r} expected to say "
+            f"{expected_text!r} was not found/clickable: {error}",
+        )
+        raise
     actual_text = normalize(button.text)
     if actual_text != normalize(expected_text):
+        _log(
+            None,
+            f"NOT CLICKED: element {selector!r} label mismatch; "
+            f"expected {expected_text!r}, found {button.text.strip()!r}.",
+        )
         raise NoSuchElementException(
             f"Element {selector!r} was expected to say {expected_text!r}, "
             f"but its text is {button.text.strip()!r}."
         )
+    try:
+        button.click()
+    except WebDriverException as error:
+        _log(None, f"CLICK FAILED: element {selector!r} labeled {expected_text!r}: {error}")
+        raise
     _log(None, f"Verified and clicked element labeled {button.text.strip()!r}.")
-    button.click()
     return button
 
 
@@ -373,14 +426,31 @@ def _click_button_at_index_with_text(
             return button
         return False
 
-    button = WebDriverWait(driver, timeout).until(find_button)
+    try:
+        button = WebDriverWait(driver, timeout).until(find_button)
+    except WebDriverException as error:
+        _log(
+            None,
+            f"NOT CLICKED: button index {index} in {selector!r} "
+            f"was not found/clickable: {error}",
+        )
+        raise
     if normalize(button.text) != normalize(expected_text):
+        _log(
+            None,
+            f"NOT CLICKED: button index {index} label mismatch; "
+            f"expected {expected_text!r}, found {button.text.strip()!r}.",
+        )
         raise NoSuchElementException(
             f"Button index {index} in {selector!r} was expected to say "
             f"{expected_text!r}, but its text is {button.text.strip()!r}."
         )
-    _log(None, f"Verified button index {index} text {button.text.strip()!r}; clicking.")
-    button.click()
+    try:
+        button.click()
+    except WebDriverException as error:
+        _log(None, f"CLICK FAILED: button index {index} in {selector!r}: {error}")
+        raise
+    _log(None, f"Verified button index {index} text {button.text.strip()!r}; clicked.")
     return button
 
 
@@ -904,7 +974,7 @@ def _read_checker_record(driver, expected_values):
             _log(None, f"Customer Checker {label} matches ({current[field]!r}).")
         else:
             _log(None, f"Customer Checker {label} is blank in workbook; ignored.")
-
+    #this seems to meant to close the modal.
     _click_button_by_text(driver, "Close")
     driver.switch_to.default_content()
 
@@ -916,13 +986,25 @@ def _read_checker_record(driver, expected_values):
 
 
 def _approve_customer_checker_record(driver):
-    """Close and approve a matched customer; _run_checker_row calls this only after a clean comparison."""
-    _log(None, "Customer Checker matched; starting close-and-approve steps.")
+    """Approve a matched customer after _read_checker_record closes its detail modal."""
+    _log(None, "Customer Checker matched; starting checkbox-and-approve steps.")
     _switch_to_details(driver)
-    _click_selector_with_text(
-        driver,
-        "#container > section > div.h_tab > div.hom_h > form > div > div > a",
-        "Close",
+    close_parent_selector = (
+        "#container > section > div.h_tab > div.hom_h > form > div > div"
+    )
+    close_parents = driver.find_elements(By.CSS_SELECTOR, close_parent_selector)
+    parent_actions = (
+        [
+            action.text.strip()
+            for action in close_parents[0].find_elements(By.CSS_SELECTOR, "a, button")
+        ]
+        if close_parents
+        else []
+    )
+    _log(
+        None,
+        f"Customer Checker controls remaining in post-modal action parent: "
+        f"{parent_actions!r}.",
     )
     mark_del = _wait_element(driver, By.ID, "MarkDel")
     if mark_del.get_attribute("type") != "checkbox":
@@ -1019,20 +1101,60 @@ def _read_account_checker_record(driver, expected_values):
         else:
             _log(None, f"Account Checker {column_name} is blank in workbook; ignored.")
 
+    modal_content_selector = (By.ID, "dummy")
+    _log(None, "Confirming Account Checker modal content is visible before closing.")
+    WebDriverWait(driver, 15).until(
+        EC.visibility_of_element_located(modal_content_selector)
+    )
     close_selector = "#div_title_1 > button > span:nth-child(1)"
-    _log(None, "Waiting for the Account Checker modal close control to become visible.")
-    close_control = WebDriverWait(driver, 15).until(
-        EC.visibility_of_element_located((By.CSS_SELECTOR, close_selector))
-    )
-    close_button = close_control.find_element(By.XPATH, "..")
-    WebDriverWait(driver, 15).until(
-        lambda _: close_button.is_displayed() and close_button.is_enabled()
-    )
-    _log(None, "Account Checker modal close control is visible; clicking its button.")
-    close_button.click()
-    WebDriverWait(driver, 15).until(
-        EC.invisibility_of_element_located((By.CSS_SELECTOR, close_selector))
-    )
+    close_button_clicked = False
+    try:
+        _log(None, "Waiting for the Account Checker modal X control to become visible.")
+        close_control = WebDriverWait(driver, 3).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, close_selector))
+        )
+        close_button = close_control.find_element(By.XPATH, "..")
+        WebDriverWait(driver, 3).until(
+            lambda _: close_button.is_displayed() and close_button.is_enabled()
+        )
+        _log(None, "Account Checker modal X control is visible; clicking its button.")
+        close_button.click()
+        close_button_clicked = True
+    except (TimeoutException, WebDriverException) as error:
+        _log(
+            None,
+            f"Account Checker modal close button unavailable or failed "
+            f"({error}); will try Escape if the modal remains visible.",
+        )
+
+    modal_closed = False
+    if close_button_clicked:
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.invisibility_of_element_located(modal_content_selector)
+            )
+            modal_closed = True
+        except TimeoutException:
+            _log(None, "Account Checker close button did not close the modal.")
+
+    if not modal_closed:
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.visibility_of_element_located(modal_content_selector)
+            )
+        except TimeoutException:
+            modal_closed = True
+
+    if not modal_closed:
+        _log(None, "Account Checker modal content is visible; sending Escape.")
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.invisibility_of_element_located(modal_content_selector)
+            )
+        except TimeoutException:
+            _log(None, "ESCAPE FAILED: Account Checker modal content is still visible.")
+            raise
     _log(None, "Account Checker data modal is closed.")
     driver.switch_to.default_content()
     if mismatches:
@@ -1072,9 +1194,11 @@ def _run_checker_row(driver, values):
         "customer_segment": values[5],
     }
     if not _open_checker_record(driver, cif, rel_id):
+        _log(None, "Customer Checker row skipped: record was not found.")
         return "CIF/Rel_ID Not Found"
     result = _read_checker_record(driver, expected_values)
     if result:
+        _log(None, f"Customer Checker row skipped: comparison did not pass ({result}).")
         return result
     _approve_customer_checker_record(driver)
     return "Approved"
@@ -1085,9 +1209,11 @@ def _run_account_checker_row(driver, values):
     _log(None, f"Account Checker row values: {values!r}.")
     expected_values = {"status": values[1], "branch": values[2]}
     if not _open_account_checker_record(driver, values[0]):
+        _log(None, "Account Checker row skipped: record was not found.")
         return "Account Not Found"
     result = _read_account_checker_record(driver, expected_values)
     if result:
+        _log(None, f"Account Checker row skipped: comparison did not pass ({result}).")
         return result
     _approve_account_checker_record(driver)
     return "Approved"
@@ -1163,11 +1289,22 @@ def run_uts_workflow(
                 result = processor(driver, values)
                 worksheet.cell(row_number, result_column, result)
                 _log(log_callback, f"Row {row_number}: {result}")
+                if normalize(result) != completed_result.upper():
+                    _log(
+                        log_callback,
+                        f"Row {row_number}: did not reach success status "
+                        f"{completed_result!r}; proceeding to the next row.",
+                    )
             except Exception as error:
                 message = str(error)
                 result = message if message == "ERROR_segment out of scope" else f"Error: {message}"
                 worksheet.cell(row_number, result_column, result)
                 _log(log_callback, f"Row {row_number}: {result}")
+                _log(
+                    log_callback,
+                    f"Row {row_number}: action failed; remaining actions for this "
+                    "row were skipped and the runner will proceed to the next row.",
+                )
                 if message != "ERROR_segment out of scope":
                     _log(
                         log_callback,
