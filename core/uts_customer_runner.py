@@ -593,6 +593,40 @@ def _run_maker_row(driver, values):
     _log(None, "Saving Customer Maker edits.")
     _click_parent_link(driver, ".td_serach_btn", 0, "Customer Save")
     _switch_to_details(driver)
+    if "officer" in updates:
+        expected_error = (
+            "OFFICER STATUS SHOULD BE ACTIVE IS COSTUMER STATUS IS NOT CLOSED"
+        )
+
+        def find_officer_status_error(current_driver):
+            for message_element in current_driver.find_elements(
+                By.CSS_SELECTOR, "#message"
+            ):
+                if (
+                    message_element.is_displayed()
+                    and re.sub(r"\s+", " ", normalize(message_element.text))
+                    == expected_error
+                ):
+                    return message_element
+            return False
+
+        try:
+            WebDriverWait(driver, 2, poll_frequency=0.2).until(
+                find_officer_status_error
+            )
+            _log(
+                None,
+                "Customer Maker save rejected the officer code because its status "
+                "is inactive for the customer status; moving to the next row.",
+            )
+            return "Officer code invalid"
+        except TimeoutException:
+            _log(
+                None,
+                "No matching officer-status validation message appeared; "
+                "verifying saved customer values.",
+            )
+
     display_field_ids = {
         "status": "SPAN_CUST_DETAIL_CUST_STATUS_CODE",
         "branch": "SPAN_CUST_DETAIL_GEN_BRCH_CODE",
