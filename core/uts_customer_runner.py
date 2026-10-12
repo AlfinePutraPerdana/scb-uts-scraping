@@ -681,8 +681,13 @@ def _run_maker_row(driver, values):
             return False
 
         try:
-            WebDriverWait(driver, 2, poll_frequency=0.2).until(
+            error_element = WebDriverWait(driver, 1, poll_frequency=0.2).until(
                 find_officer_status_error
+            )
+            _log(
+                None,
+                "Detected expected invalid-officer #message: "
+                f"{error_element.text.strip()!r}.",
             )
             _log(
                 None,
@@ -691,11 +696,31 @@ def _run_maker_row(driver, values):
             )
             return "Officer code invalid"
         except TimeoutException:
-            _log(
-                None,
-                "No matching officer-status validation message appeared; "
-                "verifying saved customer values.",
-            )
+            message_elements = driver.find_elements(By.CSS_SELECTOR, "#message")
+            visible_messages = [
+                re.sub(r"\s+", " ", element.text).strip()
+                for element in message_elements
+                if element.is_displayed() and element.text.strip()
+            ]
+            if visible_messages:
+                _log(
+                    None,
+                    "Detected a different #message after Customer Maker save; "
+                    f"expected {expected_error!r}, found {visible_messages!r}. "
+                    "Verifying saved customer values.",
+                )
+            elif message_elements:
+                _log(
+                    None,
+                    "A #message element exists, but it has no visible message text; "
+                    "verifying saved customer values.",
+                )
+            else:
+                _log(
+                    None,
+                    "No #message element was detected after Customer Maker save; "
+                    "verifying saved customer values.",
+                )
 
     display_field_ids = {
         "status": "SPAN_CUST_DETAIL_CUST_STATUS_CODE",
@@ -1102,59 +1127,15 @@ def _read_account_checker_record(driver, expected_values):
             _log(None, f"Account Checker {column_name} is blank in workbook; ignored.")
 
     modal_content_selector = (By.ID, "dummy")
-    _log(None, "Confirming Account Checker modal content is visible before closing.")
-    WebDriverWait(driver, 15).until(
-        EC.visibility_of_element_located(modal_content_selector)
-    )
-    close_selector = "#div_title_1 > button > span:nth-child(1)"
-    close_button_clicked = False
+    _log(None, "Sending Escape to close the Account Checker data modal.")
+    ActionChains(driver).send_keys(Keys.ESCAPE).perform()
     try:
-        _log(None, "Waiting for the Account Checker modal X control to become visible.")
-        close_control = WebDriverWait(driver, 3).until(
-            EC.visibility_of_element_located((By.CSS_SELECTOR, close_selector))
+        WebDriverWait(driver, 10).until(
+            EC.invisibility_of_element_located(modal_content_selector)
         )
-        close_button = close_control.find_element(By.XPATH, "..")
-        WebDriverWait(driver, 3).until(
-            lambda _: close_button.is_displayed() and close_button.is_enabled()
-        )
-        _log(None, "Account Checker modal X control is visible; clicking its button.")
-        close_button.click()
-        close_button_clicked = True
-    except (TimeoutException, WebDriverException) as error:
-        _log(
-            None,
-            f"Account Checker modal close button unavailable or failed "
-            f"({error}); will try Escape if the modal remains visible.",
-        )
-
-    modal_closed = False
-    if close_button_clicked:
-        try:
-            WebDriverWait(driver, 3).until(
-                EC.invisibility_of_element_located(modal_content_selector)
-            )
-            modal_closed = True
-        except TimeoutException:
-            _log(None, "Account Checker close button did not close the modal.")
-
-    if not modal_closed:
-        try:
-            WebDriverWait(driver, 3).until(
-                EC.visibility_of_element_located(modal_content_selector)
-            )
-        except TimeoutException:
-            modal_closed = True
-
-    if not modal_closed:
-        _log(None, "Account Checker modal content is visible; sending Escape.")
-        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-        try:
-            WebDriverWait(driver, 10).until(
-                EC.invisibility_of_element_located(modal_content_selector)
-            )
-        except TimeoutException:
-            _log(None, "ESCAPE FAILED: Account Checker modal content is still visible.")
-            raise
+    except TimeoutException:
+        _log(None, "ESCAPE FAILED: Account Checker modal content is still visible.")
+        raise
     _log(None, "Account Checker data modal is closed.")
     driver.switch_to.default_content()
     if mismatches:
