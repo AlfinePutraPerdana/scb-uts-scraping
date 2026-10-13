@@ -556,6 +556,20 @@ def _customer_segment_matches(value, target):
     return CUSTOMER_SEGMENT_TARGETS.get(_normalize_header(value)) == target
 
 
+def _dismiss_customer_maker_search_alert(driver, timeout=0.5):
+    """Accept an optional native alert raised by Customer Maker's Go action."""
+    try:
+        alert = WebDriverWait(driver, timeout, poll_frequency=0.1).until(
+            EC.alert_is_present()
+        )
+    except TimeoutException:
+        return None
+    message = alert.text
+    alert.accept()
+    _log(None, f"Accepted Customer Maker search alert: {message!r}.")
+    return message
+
+
 def _search_customer_maker(driver, cif):
     """Enter and verify a CIF, click Go, and open its result; _run_maker_row calls this before reading values."""
     _log(None, f"Customer Maker: searching CIF {cif!r}.")
@@ -621,14 +635,26 @@ def _search_customer_maker(driver, cif):
             f"Customer Maker could not find a visible, enabled Go button for "
             f"CIF {expected_cif!r} using the initial or post-row search controls."
         ) from error
-    search_button.click()
+    try:
+        search_button.click()
+    except UnexpectedAlertPresentException as error:
+        alert_message = _dismiss_customer_maker_search_alert(driver)
+        if alert_message is None:
+            raise
+        raise RuntimeError(
+            f"Customer Maker Go raised an alert: {alert_message}"
+        ) from error
     _log(None, "Clicked the visible, enabled Go button for the current CIF search.")
     _log(None, f"Clicked Go button for CIF number {expected_cif}.")
+    alert_message = _dismiss_customer_maker_search_alert(driver)
+    if alert_message is not None:
+        raise RuntimeError(
+            f"Customer Maker Go raised an alert: {alert_message}"
+        )
 
     _switch_to_details(driver)
     _log(None, f"Waiting for search result for CIF number {expected_cif}.")
-    result = _wait_element(driver, By.ID, "SPAN_CUST_DETAIL_LIST_CUST_NO_0")
-    result.click()
+    _click_element(driver, By.ID, "SPAN_CUST_DETAIL_LIST_CUST_NO_0")
     _log(None, f"Opened the first matching customer record for CIF {expected_cif}.")
     _switch_to_details(driver)
 
@@ -733,7 +759,7 @@ def _run_maker_row(driver, values):
         "Waiting for Customer Maker edit mode to return and the Save button to disappear.",
     )
     try:
-        WebDriverWait(driver, 15, poll_frequency=0.5).until(
+        WebDriverWait(driver, 10, poll_frequency=0.2).until(
             customer_edit_mode_restored
         )
     except TimeoutException:
@@ -927,6 +953,7 @@ def _open_checker_record(driver, cif, rel_id=None):
     """Search and open one Customer Checker record; _run_checker_row calls this before comparison."""
     _log(None, f"Customer Checker: searching by CIF={cif!r}, Rel_ID={rel_id!r}.")
     _switch_to_details(driver)
+    _click_customer_checker_refresh(driver)
     _click_selector_with_text(
         driver,
         "#container > section > div > div > form > div:nth-child(2) > "
@@ -957,11 +984,12 @@ def _open_checker_record(driver, cif, rel_id=None):
         _wait_element(driver, By.CSS_SELECTOR, "form[name='fmDetails'] table", timeout=8)
     except TimeoutException:
         _log(None, "Customer Checker result table did not appear.")
+        _click_customer_checker_refresh(driver, inside=True)
         return False
     rows = driver.find_elements(By.CSS_SELECTOR, "form[name='fmDetails'] table tr")
     if len(rows) <= 2:
         _log(None, "Customer Checker search returned no record row.")
-        _click_refresh_if_present(driver)
+        _click_customer_checker_refresh(driver, inside=True)
         return False
     links = driver.find_elements(
         By.CSS_SELECTOR,
@@ -970,11 +998,36 @@ def _open_checker_record(driver, cif, rel_id=None):
     )
     if not links:
         _log(None, "Customer Checker result Function ID link not found.")
-        _click_refresh_if_present(driver)
+        _click_customer_checker_refresh(driver, inside=True)
         return False
     links[0].click()
     _log(None, "Opened Customer Checker Function ID record.")
     return True
+
+
+def _click_customer_checker_refresh(driver, inside=False):
+    """Click the appropriate optional Refresh link for the Customer Checker page state."""
+    selector = (
+        "#container > section > div > div > form > div:nth-child(2) > "
+        "div > a"
+        if inside
+        else "#container > section > div > div > form > div:nth-child(2) > "
+        "div > a:nth-child(1)"
+    )
+    refresh_links = driver.find_elements(By.CSS_SELECTOR, selector)
+    for link in refresh_links:
+        if (
+            normalize(link.text) == "REFRESH"
+            and link.is_displayed()
+            and link.is_enabled()
+        ):
+            link.click()
+            location = "inside" if inside else "front"
+            _log(None, f"Clicked Customer Checker {location} Refresh.")
+            return True
+    location = "inside" if inside else "front"
+    _log(None, f"Customer Checker {location} Refresh link is not available.")
+    return False
 
 
 def _click_refresh_if_present(driver):
@@ -1093,7 +1146,9 @@ def _open_account_checker_record(driver, account_number):
     account_input.clear()
     account_input.send_keys(str(account_number).strip())
     _log(None, "Entered account number in Account Checker search.")
-    _click_button_by_text(driver, "OK", selector="nav > a")
+    _click_button_by_text(
+        driver, "OK", selector="nav > a", timeout=30
+    )
     _log(None, "Submitted Account Checker search.")
     driver.switch_to.default_content()
 
@@ -1202,7 +1257,7 @@ def _run_checker_row(driver, values):
     }
     if not _open_checker_record(driver, cif, rel_id):
         _log(None, "Customer Checker row skipped: record was not found.")
-        return "CIF/Rel_ID Not Found"
+        return "Error:data not found"
     result = _read_checker_record(driver, expected_values)
     if result:
         _log(None, f"Customer Checker row skipped: comparison did not pass ({result}).")

@@ -1,3 +1,5 @@
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 from threading import Event, Thread
 from urllib.parse import urlparse
@@ -18,8 +20,79 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from selenium.common.exceptions import WebDriverException
+
 from core.scraper import Scraper
 from core.uts_customer_runner import run_uts_workflow, validate_uts_workbook
+
+
+def _bring_browser_to_front(page_title):
+    if not page_title:
+        return False
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    enum_windows = user32.EnumWindows
+    enum_windows_callback_type = ctypes.WINFUNCTYPE(
+        wintypes.BOOL, wintypes.HWND, wintypes.LPARAM
+    )
+    enum_windows.argtypes = (
+        enum_windows_callback_type,
+        wintypes.LPARAM,
+    )
+    enum_windows.restype = wintypes.BOOL
+    is_window_visible = user32.IsWindowVisible
+    is_window_visible.argtypes = (wintypes.HWND,)
+    is_window_visible.restype = wintypes.BOOL
+    get_window_text_length = user32.GetWindowTextLengthW
+    get_window_text_length.argtypes = (wintypes.HWND,)
+    get_window_text_length.restype = ctypes.c_int
+    get_window_text = user32.GetWindowTextW
+    get_window_text.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    get_window_text.restype = ctypes.c_int
+    get_class_name = user32.GetClassNameW
+    get_class_name.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+    get_class_name.restype = ctypes.c_int
+
+    matching_windows = []
+
+    @enum_windows_callback_type
+    def find_browser_window(hwnd, _):
+        if not is_window_visible(hwnd):
+            return True
+
+        class_name = ctypes.create_unicode_buffer(256)
+        get_class_name(hwnd, class_name, len(class_name))
+        if class_name.value != "Chrome_WidgetWin_1":
+            return True
+
+        title_length = get_window_text_length(hwnd)
+        if not title_length:
+            return True
+        window_title = ctypes.create_unicode_buffer(title_length + 1)
+        get_window_text(hwnd, window_title, len(window_title))
+        if page_title.casefold() in window_title.value.casefold():
+            matching_windows.append(hwnd)
+            return False
+        return True
+
+    enum_windows(find_browser_window, 0)
+    if not matching_windows:
+        return False
+
+    hwnd = matching_windows[0]
+    show_window = user32.ShowWindow
+    show_window.argtypes = (wintypes.HWND, ctypes.c_int)
+    show_window.restype = wintypes.BOOL
+    bring_window_to_top = user32.BringWindowToTop
+    bring_window_to_top.argtypes = (wintypes.HWND,)
+    bring_window_to_top.restype = wintypes.BOOL
+    set_foreground_window = user32.SetForegroundWindow
+    set_foreground_window.argtypes = (wintypes.HWND,)
+    set_foreground_window.restype = wintypes.BOOL
+
+    show_window(hwnd, 9)
+    bring_window_to_top(hwnd)
+    return bool(set_foreground_window(hwnd))
 
 
 class UTSScrapingScreen(QWidget):
@@ -205,6 +278,22 @@ class UTSScrapingScreen(QWidget):
         self.stop_button.setEnabled(True)
         self.open_browser_button.setEnabled(False)
         self.close_browser_button.setEnabled(False)
+        try:
+            browser_title = self.scraper.driver.title
+        except WebDriverException as error:
+            self.log_message.emit(f"Could not focus the scraping browser: {error}")
+        else:
+            try:
+                browser_focused = _bring_browser_to_front(browser_title)
+            except OSError as error:
+                self.log_message.emit(
+                    f"Could not focus the scraping browser: {error}"
+                )
+            else:
+                if not browser_focused:
+                    self.log_message.emit(
+                        "Could not bring the scraping browser to the foreground."
+                    )
         mode = self.mode_combo.currentData()
         self.status_label.setText(f"Running {self.mode_combo.currentText().lower()} workflow...")
         Thread(
@@ -234,6 +323,11 @@ class UTSScrapingScreen(QWidget):
 
     def _on_workflow_finished(self, all_rows_processed):
         self._running = False
+        window = self.window()
+        if window.isMinimized():
+            window.showNormal()
+        window.raise_()
+        window.activateWindow()
         if all_rows_processed:
             self.status_label.setText("Process done. Check the workbook results.")
             QMessageBox.information(
