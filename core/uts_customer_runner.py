@@ -9,6 +9,7 @@ import openpyxl
 from selenium.common.exceptions import (
     NoSuchElementException,
     NoSuchWindowException,
+    StaleElementReferenceException,
     TimeoutException,
     UnexpectedAlertPresentException,
     WebDriverException,
@@ -375,35 +376,79 @@ def _click_selector_with_text(driver, selector, expected_text, timeout=15):
         None,
         f"Waiting for element {selector!r} labeled {expected_text!r}.",
     )
-    try:
-        button = WebDriverWait(driver, timeout).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-        )
-    except WebDriverException as error:
-        _log(
-            None,
-            f"NOT CLICKED: element {selector!r} expected to say "
-            f"{expected_text!r} was not found/clickable: {error}",
-        )
-        raise
-    actual_text = normalize(button.text)
-    if actual_text != normalize(expected_text):
-        _log(
-            None,
-            f"NOT CLICKED: element {selector!r} label mismatch; "
-            f"expected {expected_text!r}, found {button.text.strip()!r}.",
-        )
-        raise NoSuchElementException(
-            f"Element {selector!r} was expected to say {expected_text!r}, "
-            f"but its text is {button.text.strip()!r}."
-        )
-    try:
-        button.click()
-    except WebDriverException as error:
-        _log(None, f"CLICK FAILED: element {selector!r} labeled {expected_text!r}: {error}")
-        raise
-    _log(None, f"Verified and clicked element labeled {button.text.strip()!r}.")
-    return button
+    for attempt in range(2):
+        try:
+            button = WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+            )
+        except StaleElementReferenceException as error:
+            if attempt == 0:
+                _log(
+                    None,
+                    f"Element {selector!r} became stale before clicking; "
+                    "looking it up again.",
+                )
+                continue
+            _log(
+                None,
+                f"CLICK FAILED: element {selector!r} labeled "
+                f"{expected_text!r}: {error}",
+            )
+            raise
+        except WebDriverException as error:
+            _log(
+                None,
+                f"NOT CLICKED: element {selector!r} expected to say "
+                f"{expected_text!r} was not found/clickable: {error}",
+            )
+            raise
+        try:
+            actual_text = button.text.strip()
+        except StaleElementReferenceException as error:
+            if attempt == 0:
+                _log(
+                    None,
+                    f"Element {selector!r} became stale before clicking; "
+                    "looking it up again.",
+                )
+                continue
+            _log(
+                None,
+                f"CLICK FAILED: element {selector!r} labeled "
+                f"{expected_text!r}: {error}",
+            )
+            raise
+        if normalize(actual_text) != normalize(expected_text):
+            _log(
+                None,
+                f"NOT CLICKED: element {selector!r} label mismatch; "
+                f"expected {expected_text!r}, found {actual_text!r}.",
+            )
+            raise NoSuchElementException(
+                f"Element {selector!r} was expected to say {expected_text!r}, "
+                f"but its text is {actual_text!r}."
+            )
+        try:
+            button.click()
+        except StaleElementReferenceException as error:
+            if attempt == 0:
+                _log(
+                    None,
+                    f"Element {selector!r} became stale before clicking; "
+                    "looking it up again.",
+                )
+                continue
+            _log(
+                None,
+                f"CLICK FAILED: element {selector!r} labeled "
+                f"{expected_text!r}: {error}",
+            )
+            raise
+        except WebDriverException as error:
+            _log(None, f"CLICK FAILED: element {selector!r} labeled {expected_text!r}: {error}")
+            raise
+        _log(None, f"Verified and clicked element labeled {actual_text!r}.")
+        return button
 
 
 def _click_button_at_index_with_text(
@@ -663,64 +708,41 @@ def _run_maker_row(driver, values):
     _log(None, "Saving Customer Maker edits.")
     _click_parent_link(driver, ".td_serach_btn", 0, "Customer Save")
     _switch_to_details(driver)
-    if "officer" in updates:
-        expected_error = (
-            "OFFICER STATUS SHOULD BE ACTIVE IS COSTUMER STATUS IS NOT CLOSED"
+
+    def customer_edit_mode_restored(current_driver):
+        action_parents = current_driver.find_elements(
+            By.CSS_SELECTOR, ".td_serach_btn"
         )
-
-        def find_officer_status_error(current_driver):
-            for message_element in current_driver.find_elements(
-                By.CSS_SELECTOR, "#message"
-            ):
-                if (
-                    message_element.is_displayed()
-                    and re.sub(r"\s+", " ", normalize(message_element.text))
-                    == expected_error
-                ):
-                    return message_element
+        if not action_parents:
             return False
+        links = action_parents[0].find_elements(By.TAG_NAME, "a")
+        visible_links = [
+            (link, normalize(link.text))
+            for link in links
+            if link.is_displayed()
+        ]
+        edit_available = any(
+            "EDIT" in label and link.is_enabled()
+            for link, label in visible_links
+        )
+        save_still_available = any("SAVE" in label for _, label in visible_links)
+        return edit_available and not save_still_available
 
-        try:
-            error_element = WebDriverWait(driver, 1, poll_frequency=0.2).until(
-                find_officer_status_error
-            )
-            _log(
-                None,
-                "Detected expected invalid-officer #message: "
-                f"{error_element.text.strip()!r}.",
-            )
-            _log(
-                None,
-                "Customer Maker save rejected the officer code because its status "
-                "is inactive for the customer status; moving to the next row.",
-            )
-            return "Officer code invalid"
-        except TimeoutException:
-            message_elements = driver.find_elements(By.CSS_SELECTOR, "#message")
-            visible_messages = [
-                re.sub(r"\s+", " ", element.text).strip()
-                for element in message_elements
-                if element.is_displayed() and element.text.strip()
-            ]
-            if visible_messages:
-                _log(
-                    None,
-                    "Detected a different #message after Customer Maker save; "
-                    f"expected {expected_error!r}, found {visible_messages!r}. "
-                    "Verifying saved customer values.",
-                )
-            elif message_elements:
-                _log(
-                    None,
-                    "A #message element exists, but it has no visible message text; "
-                    "verifying saved customer values.",
-                )
-            else:
-                _log(
-                    None,
-                    "No #message element was detected after Customer Maker save; "
-                    "verifying saved customer values.",
-                )
+    _log(
+        None,
+        "Waiting for Customer Maker edit mode to return and the Save button to disappear.",
+    )
+    try:
+        WebDriverWait(driver, 15, poll_frequency=0.5).until(
+            customer_edit_mode_restored
+        )
+    except TimeoutException:
+        _log(
+            None,
+            "Customer Maker did not return to edit mode after saving; "
+            "reporting a save failure.",
+        )
+        return "Error: cannot save"
 
     display_field_ids = {
         "status": "SPAN_CUST_DETAIL_CUST_STATUS_CODE",
@@ -736,10 +758,12 @@ def _run_maker_row(driver, values):
             else normalize(actual) == normalize(expected)
         )
         if not matches:
-            raise RuntimeError(
+            _log(
+                None,
                 f"Customer save verification failed for {key}: "
-                f"expected {expected!r}, found {actual!r}."
+                f"expected {expected!r}, found {actual!r}; reporting a save failure."
             )
+            return "Error: cannot save"
         _log(None, f"Verified saved customer {key}: {actual!r}.")
     _log(None, "Customer Maker save action completed and verified.")
     return "Done"
@@ -1069,7 +1093,7 @@ def _open_account_checker_record(driver, account_number):
     account_input.clear()
     account_input.send_keys(str(account_number).strip())
     _log(None, "Entered account number in Account Checker search.")
-    _click_button_by_text(driver, "OK")
+    _click_button_by_text(driver, "OK", selector="nav > a")
     _log(None, "Submitted Account Checker search.")
     driver.switch_to.default_content()
 
@@ -1120,7 +1144,9 @@ def _read_account_checker_record(driver, expected_values):
                 f"Account Checker mismatch for {column_name}: expected={expected!r}, "
                 f"actual={current[field]!r}.",
             )
-            mismatches.append(column_name)
+            mismatches.append(
+                f"{column_name} {expected} found {current[field]} instead"
+            )
         elif normalize(expected):
             _log(None, f"Account Checker {column_name} matches ({current[field]!r}).")
         else:
@@ -1140,7 +1166,7 @@ def _read_account_checker_record(driver, expected_values):
     driver.switch_to.default_content()
     if mismatches:
         _log(None, f"Account Checker mismatches found: {mismatches!r}.")
-        return ", ".join(mismatches)
+        return "MISMATCH : " + "; ".join(mismatches)
     _log(None, "Account Checker values all match.")
     return ""
 
