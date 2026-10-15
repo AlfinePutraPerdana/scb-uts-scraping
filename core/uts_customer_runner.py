@@ -326,20 +326,46 @@ def _click_parent_link(driver, parent_selector, index, action, timeout=15):
     return link
 
 
-def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", timeout=15):
+def _click_button_by_text(
+    driver, expected_text, selector=".btn.toggleButton", timeout=15,
+    diagnostic_selector=None,
+):
     """Click a unique visible button by label; checker flows use it where selectors are ambiguous."""
     expected = normalize(expected_text)
     _log(None, f"Looking for a unique button labeled {expected_text!r}.")
+    diagnostic_state = {"phase": "waiting for matching button", "snapshot": {}}
 
     def find_buttons(current_driver):
         """Find visible, enabled matches on each wait poll so hidden duplicate buttons are ignored."""
-        buttons = [
-            button
-            for button in current_driver.find_elements(By.CSS_SELECTOR, selector)
-            if normalize(button.text) == expected
-            and button.is_displayed()
-            and button.is_enabled()
-        ]
+        if diagnostic_selector:
+            diagnostic_state["phase"] = (
+                f"checking diagnostic selector {diagnostic_selector!r}"
+            )
+            specific_links = current_driver.find_elements(
+                By.CSS_SELECTOR, diagnostic_selector
+            )
+            diagnostic_state["snapshot"]["specific_selector"] = [
+                {
+                    "text": link.text.strip(),
+                    "visible": link.is_displayed(),
+                    "enabled": link.is_enabled(),
+                }
+                for link in specific_links
+            ]
+
+        diagnostic_state["phase"] = f"checking candidate links from {selector!r}"
+        buttons = []
+        candidates = []
+        for button in current_driver.find_elements(By.CSS_SELECTOR, selector):
+            text = button.text.strip()
+            visible = button.is_displayed()
+            enabled = button.is_enabled()
+            candidates.append(
+                {"text": text, "visible": visible, "enabled": enabled}
+            )
+            if normalize(text) == expected and visible and enabled:
+                buttons.append(button)
+        diagnostic_state["snapshot"]["candidates"] = candidates
         return buttons or False
 
     try:
@@ -347,10 +373,17 @@ def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", t
     except WebDriverException as error:
         _log(
             None,
-            f"NOT CLICKED: button labeled {expected_text!r} "
-            f"was not found/clickable: {error}",
+            f"NOT CLICKED: lookup for button labeled {expected_text!r} "
+            f"failed during {diagnostic_state['phase']}: {error}. "
+            f"Last observed controls: {diagnostic_state['snapshot']!r}.",
         )
         raise
+    _log(
+        None,
+        f"Found {len(buttons)} visible, enabled link(s) labeled "
+        f"{expected_text!r}; observed controls: "
+        f"{diagnostic_state['snapshot']!r}.",
+    )
     if len(buttons) != 1:
         _log(
             None,
@@ -361,12 +394,18 @@ def _click_button_by_text(driver, expected_text, selector=".btn.toggleButton", t
             f"Expected one button labeled {expected_text!r}, found {len(buttons)}."
         )
     button = buttons[0]
+    diagnostic_state["phase"] = "clicking matching button"
+    _log(None, f"Clicking unique button labeled {expected_text!r}.")
     try:
         button.click()
     except WebDriverException as error:
-        _log(None, f"CLICK FAILED: button labeled {expected_text!r}: {error}")
+        _log(
+            None,
+            f"CLICK FAILED while {diagnostic_state['phase']}: "
+            f"button labeled {expected_text!r}: {error}",
+        )
         raise
-    _log(None, f"Clicked button labeled {button.text.strip()!r}.")
+    _log(None, f"Click command returned for button labeled {expected_text!r}.")
     return button
 
 
@@ -637,6 +676,14 @@ def _search_customer_maker(driver, cif):
         ) from error
     try:
         search_button.click()
+        _log(None, "Clicked the visible, enabled Go button for the current CIF search.")
+        _log(None, f"Clicked Go button for CIF number {expected_cif}.")
+
+        _switch_to_details(driver)
+        _log(None, f"Waiting for search result for CIF number {expected_cif}.")
+        _click_element(driver, By.ID, "SPAN_CUST_DETAIL_LIST_CUST_NO_0")
+        _log(None, f"Opened the first matching customer record for CIF {expected_cif}.")
+        _switch_to_details(driver)
     except UnexpectedAlertPresentException as error:
         alert_message = _dismiss_customer_maker_search_alert(driver)
         if alert_message is None:
@@ -644,19 +691,6 @@ def _search_customer_maker(driver, cif):
         raise RuntimeError(
             f"Customer Maker Go raised an alert: {alert_message}"
         ) from error
-    _log(None, "Clicked the visible, enabled Go button for the current CIF search.")
-    _log(None, f"Clicked Go button for CIF number {expected_cif}.")
-    alert_message = _dismiss_customer_maker_search_alert(driver)
-    if alert_message is not None:
-        raise RuntimeError(
-            f"Customer Maker Go raised an alert: {alert_message}"
-        )
-
-    _switch_to_details(driver)
-    _log(None, f"Waiting for search result for CIF number {expected_cif}.")
-    _click_element(driver, By.ID, "SPAN_CUST_DETAIL_LIST_CUST_NO_0")
-    _log(None, f"Opened the first matching customer record for CIF {expected_cif}.")
-    _switch_to_details(driver)
 
 
 def _run_maker_row(driver, values):
@@ -759,7 +793,7 @@ def _run_maker_row(driver, values):
         "Waiting for Customer Maker edit mode to return and the Save button to disappear.",
     )
     try:
-        WebDriverWait(driver, 10, poll_frequency=0.2).until(
+        WebDriverWait(driver, 5, poll_frequency=0.2).until(
             customer_edit_mode_restored
         )
     except TimeoutException:
@@ -1147,7 +1181,14 @@ def _open_account_checker_record(driver, account_number):
     account_input.send_keys(str(account_number).strip())
     _log(None, "Entered account number in Account Checker search.")
     _click_button_by_text(
-        driver, "OK", selector="nav > a", timeout=30
+        driver,
+        "OK",
+        selector="nav > a",
+        timeout=30,
+        diagnostic_selector=(
+            "body > div > section > div.h_tab.ppw_h_tab > form > div > "
+            "nav > a:nth-child(1)"
+        ),
     )
     _log(None, "Submitted Account Checker search.")
     driver.switch_to.default_content()
