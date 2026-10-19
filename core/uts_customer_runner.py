@@ -793,7 +793,7 @@ def _run_maker_row(driver, values):
         "Waiting for Customer Maker edit mode to return and the Save button to disappear.",
     )
     try:
-        WebDriverWait(driver, 5, poll_frequency=0.2).until(
+        WebDriverWait(driver, 3, poll_frequency=0.2).until(
             customer_edit_mode_restored
         )
     except TimeoutException:
