@@ -39,6 +39,20 @@ CUSTOMER_SEGMENT_TARGETS = {
     "PRIORITYBANKING": "PRIORITY",
     "PRIORITYCUSTOMER": "PRIORITY",
 }
+CUSTOMER_STATUS_SELECTORS = {
+    "CLOSED": "#CUST_DETAIL_CUST_STATUS_CODE > option:nth-child(2)",
+    "DEATH CLAIMED": "#CUST_DETAIL_CUST_STATUS_CODE > option:nth-child(5)",
+    "DMI": "#CUST_DETAIL_CUST_STATUS_CODE > option:nth-child(9)",
+    "NORMAL": "#CUST_DETAIL_CUST_STATUS_CODE > option:nth-child(18)",
+}
+ACCOUNT_STATUS_SELECTORS = {
+    "CLOSED": "#fmStatus select > option:nth-child(1)",
+    "DECEASED CLIENT": "#fmStatus select > option:nth-child(3)",
+    "DMI": "#fmStatus select > option:nth-child(4)",
+    "DMI ALLOW REDEEM": "#fmStatus select > option:nth-child(5)",
+    "NORMAL": "#fmStatus select > option:nth-child(7)",
+    "UPDATE CUSTOMER DATA FOR SID": "#fmStatus select > option:nth-child(12)",
+}
 INPUT_HEADER_ALIASES = {
     1: {"RELID"},
     2: {"CIF", "CIFNO", "CIFNUMBER", "CUSTOMERNO", "CUSTOMERNUMBER", "CUSTOMERID"},
@@ -568,6 +582,104 @@ def _read_customer_details(driver):
     return details
 
 
+def _status_option_matches(option, requested_status):
+    expected = normalize(requested_status)
+    option_value = normalize(option.get_attribute("value"))
+    option_inner_text = normalize(
+        option.get_attribute("innerText") or option.text
+    )
+    return expected in {option_value, option_inner_text}
+
+
+def _select_status_option(
+    driver, status_select, requested_status, selectors, status_level
+):
+    expected = str(requested_status).strip()
+    select = Select(status_select)
+    selector = selectors.get(normalize(expected))
+    selected_option = None
+    if selector:
+        options = driver.find_elements(By.CSS_SELECTOR, selector)
+        if options and _status_option_matches(options[0], expected):
+            selected_option = options[0]
+            _log(
+                None,
+                f"Verified {status_level} status selector {selector!r} for "
+                f"{expected!r}.",
+            )
+        else:
+            observed = [
+                {
+                    "value": option.get_attribute("value"),
+                    "innerText": option.get_attribute("innerText") or option.text,
+                }
+                for option in options
+            ]
+            _log(
+                None,
+                f"{status_level.title()} status selector {selector!r} did not match "
+                f"{expected!r}; observed option(s): {observed!r}. "
+                "Searching all status options.",
+            )
+
+    if selected_option is None:
+        matches = [
+            option
+            for option in select.options
+            if _status_option_matches(option, expected)
+        ]
+        if len(matches) != 1:
+            raise NoSuchElementException(
+                f"Expected one {status_level} status option matching "
+                f"{expected!r}, found {len(matches)}."
+            )
+        selected_option = matches[0]
+        _log(
+            None,
+            f"Found {status_level} status {expected!r} by checking the dropdown "
+            "option values and innerText.",
+        )
+
+    select.select_by_index(select.options.index(selected_option))
+    chosen_options = select.all_selected_options
+    if len(chosen_options) != 1 or not _status_option_matches(
+        chosen_options[0], expected
+    ):
+        chosen = [
+            {
+                "value": option.get_attribute("value"),
+                "innerText": option.get_attribute("innerText") or option.text,
+            }
+            for option in chosen_options
+        ]
+        raise NoSuchElementException(
+            f"{status_level.title()} status selection did not match {expected!r}; "
+            f"selected option(s): {chosen!r}."
+        )
+    _log(
+        None,
+        f"Selected {status_level} status {expected!r}: "
+        f"value={chosen_options[0].get_attribute('value')!r}, "
+        f"innerText="
+        f"{(chosen_options[0].get_attribute('innerText') or chosen_options[0].text)!r}.",
+    )
+
+
+def _select_account_status_option(driver, status_select, requested_status):
+    _select_status_option(
+        driver, status_select, requested_status, ACCOUNT_STATUS_SELECTORS, "account"
+    )
+
+
+def _select_customer_status(driver, requested_status):
+    status_select = _wait_element(
+        driver, By.ID, "CUST_DETAIL_CUST_STATUS_CODE"
+    )
+    _select_status_option(
+        driver, status_select, requested_status, CUSTOMER_STATUS_SELECTORS, "customer"
+    )
+
+
 def _set_customer_segment(driver, value):
     """Map and select the supported segment option; _run_maker_row calls this only when segment changes."""
     target = _customer_segment_target(value)
@@ -747,11 +859,7 @@ def _run_maker_row(driver, values):
         _log(None, f"Customer edit field is ready: {editable_field_ids[key]}.")
 
     if "status" in updates:
-        status_select = _wait_element(
-            driver, By.ID, "CUST_DETAIL_CUST_STATUS_CODE"
-        )
-        Select(status_select).select_by_visible_text(str(updates["status"]).strip())
-        _log(None, f"Set customer status to {updates['status']!r}.")
+        _select_customer_status(driver, updates["status"])
     if "branch" in updates:
         branch_input = _wait_element(driver, By.ID, "CUST_DETAIL_GEN_BRCH_CODE")
         branch_input.clear()
@@ -889,7 +997,7 @@ def _submit_account_status(driver, status):
     modal = _wait_element(driver, By.NAME, "myframe__1")
     driver.switch_to.frame(modal)
     status_select = _wait_element(driver, By.CSS_SELECTOR, "#fmStatus select")
-    Select(status_select).select_by_visible_text(str(status).strip())
+    _select_account_status_option(driver, status_select, status)
     _log(None, f"Selected account status {status!r}; submitting dialog.")
     try:
         _click_element(
@@ -923,7 +1031,10 @@ def _change_account_status(driver, current_status, requested_status):
         None,
         f"Changing account status from {current_status!r} to {requested_status!r}.",
     )
-    if normalize(current_status) == "CLOSED":
+    if (
+        normalize(current_status) == "CLOSED"
+        and normalize(requested_status) == "NORMAL"
+    ):
         _log(None, "Account is closed; switching through DMI before reopening.")
         _account_action_link(driver, 2).click()
         _submit_account_status(driver, "DMI")
