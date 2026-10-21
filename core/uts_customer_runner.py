@@ -105,6 +105,25 @@ def normalize(value):
     return str(value or "").strip().upper()
 
 
+def _maker_status(matched_columns):
+    """Include already-matched maker columns in the workbook result without losing its completion marker."""
+    if not matched_columns:
+        return "Done"
+    matched_message = "; ".join(
+        f"{column} value already matched input" for column in matched_columns
+    )
+    return f"Done | {matched_message}"
+
+
+def _is_completed_result(result, completed_result):
+    """Recognize both legacy completion markers and maker results with column details."""
+    normalized_result = normalize(result)
+    normalized_completion = normalize(completed_result)
+    return normalized_result == normalized_completion or normalized_result.startswith(
+        f"{normalized_completion} |"
+    )
+
+
 def _normalize_header(value):
     """Remove header punctuation for validate_uts_workbook's header-alias comparisons."""
     return re.sub(r"[^A-Z0-9]", "", normalize(value))
@@ -829,20 +848,32 @@ def _run_maker_row(driver, values):
         "officer": requested_officer,
         "customer_segment": requested_segment,
     }
-    updates = {
-        key: value
-        for key, value in requested.items()
-        if normalize(value)
-        and (
-            not _customer_segment_matches(current[key], segment_target)
-            if key == "customer_segment"
-            else normalize(value) != normalize(current[key])
-        )
+    column_names = {
+        "status": "Change_Status",
+        "branch": "Branch_Code",
+        "officer": "Officer_Code",
+        "customer_segment": "Customer_Segment",
     }
+    updates = {}
+    matched_columns = []
+    for key, value in requested.items():
+        if not normalize(value):
+            continue
+        matches = (
+            _customer_segment_matches(current[key], segment_target)
+            if key == "customer_segment"
+            else normalize(value) == normalize(current[key])
+        )
+        if matches:
+            matched_columns.append(column_names[key])
+        else:
+            updates[key] = value
     _log(None, f"Customer Maker fields requiring updates: {updates!r}.")
+    for column in matched_columns:
+        _log(None, f"{column} value already matched input.")
     if not updates:
         _log(None, "Customer values already match; skipping edit.")
-        return "Done"
+        return _maker_status(matched_columns)
 
     _log(None, "Opening Customer Maker edit form.")
     _click_parent_link(driver, ".td_serach_btn", 0, "Customer Edit")
@@ -934,7 +965,7 @@ def _run_maker_row(driver, values):
             return "Error: cannot save"
         _log(None, f"Verified saved customer {key}: {actual!r}.")
     _log(None, "Customer Maker save action completed and verified.")
-    return "Done"
+    return _maker_status(matched_columns)
 
 
 # -----------------------------------------------------------------------------
@@ -1050,18 +1081,23 @@ def _run_account_maker_row(driver, values):
     _log(None, f"Account Maker requested values: {values!r}.")
     _search_account_maker(driver, account_number)
     current = _read_account_details(driver)
-    updates = {
-        key: value
-        for key, value in {
-            "status": requested_status,
-            "branch": requested_branch,
-        }.items()
-        if normalize(value) and normalize(value) != normalize(current[key])
-    }
+    requested = {"status": requested_status, "branch": requested_branch}
+    column_names = {"status": "Change_Status", "branch": "Branch_Code"}
+    updates = {}
+    matched_columns = []
+    for key, value in requested.items():
+        if not normalize(value):
+            continue
+        if normalize(value) == normalize(current[key]):
+            matched_columns.append(column_names[key])
+        else:
+            updates[key] = value
     _log(None, f"Account Maker fields requiring updates: {updates!r}.")
+    for column in matched_columns:
+        _log(None, f"{column} value already matched input.")
     if not updates:
         _log(None, "Account values already match; skipping edit.")
-        return "Done"
+        return _maker_status(matched_columns)
 
     if "status" in updates:
         _change_account_status(driver, current["status"], updates["status"])
@@ -1086,7 +1122,7 @@ def _run_account_maker_row(driver, values):
             )
         _log(None, f"Verified saved account branch: {actual_branch!r}.")
         _log(None, "Account Maker branch save action completed.")
-    return "Done"
+    return _maker_status(matched_columns)
 
 
 # -----------------------------------------------------------------------------
@@ -1478,7 +1514,7 @@ def run_uts_workflow(
             if cif in (None, "") and (is_account or is_maker or rel_id in (None, "")):
                 break
             existing_result = worksheet.cell(row_number, result_column).value
-            if normalize(existing_result) == completed_result.upper():
+            if _is_completed_result(existing_result, completed_result):
                 _log(
                     log_callback,
                     f"Row {row_number}: skipped (already marked {completed_result}).",
@@ -1503,7 +1539,7 @@ def run_uts_workflow(
                 result = processor(driver, values)
                 worksheet.cell(row_number, result_column, result)
                 _log(log_callback, f"Row {row_number}: {result}")
-                if normalize(result) != completed_result.upper():
+                if not _is_completed_result(result, completed_result):
                     _log(
                         log_callback,
                         f"Row {row_number}: did not reach success status "

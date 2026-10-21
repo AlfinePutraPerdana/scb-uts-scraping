@@ -120,7 +120,7 @@ Preserve this observed sequence and intent:
 1. Search for the account using the account number (VBA reads column B) through `SEARCH_TEXT` and the search control.
 2. Select the matching account result (`SPAN_ACCOUNT_LIST_ACA_AC_NO_0` in the VBA), then wait for the account details view.
 3. Read the displayed customer/account status (`SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE`) and branch (`SPAN_ACCOUNT_DETAIL_GEN_BRCH_CODE`). Normalize comparisons by trimming whitespace and comparing case-insensitively, as the VBA does.
-4. If both current values already match the requested status (column C) and branch (column D), make no change.
+4. Compare status (column C) and branch (column D) independently: leave each matching field unchanged, but still edit and save any requested field that differs. If a field already matches, include its column name in the row's status message (for example, `Branch_Code value already matched input`); only skip editing when there are no fields to update.
 5. If a status change is requested, open the appropriate status-change control and select the requested status. If the existing status is `CLOSED`, the VBA first changes it to `DMI`, confirms, then performs the requested status change. Preserve this two-stage business rule exactly; verify the correct controls/options and whether the page state must be refreshed between stages.
 6. If a branch code is requested, open edit, set the branch field (`ACCOUNT_DETAIL_GEN_BRCH_CODE`), and save.
 7. The VBA writes `Done`/`Error` to column E and timestamps to F/G. These are Excel-processing responsibilities, not browser selectors. State clearly whether the application already supports these writebacks; otherwise flag them as requiring runner/UI implementation beyond JSON.
@@ -164,6 +164,7 @@ Before calling the conversion complete, confirm:
 - Maker no-op and `CLOSED` to `DMI` behavior cannot run unsafely as unconditional actions.
 - Checker mismatch and approve/undo decisions cannot fall through to an unsafe unconditional click.
 - Customer maker does not edit when values already match and updates only non-empty requested fields.
+- Customer and account makers save changed fields even when other requested fields already match, and report matching input columns in the row status message.
 - Customer checker mismatch handling cannot approve/undo, and its approval rule is confirmed rather than copied from the `hasOfficerCode = True` source bug.
 - Nested frames and the customer status dropdown are supported by implemented runner actions before corresponding steps are included.
 - Any unsupported behavior is explicitly reported; no VBA business rule was silently omitted.
