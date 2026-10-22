@@ -33,8 +33,8 @@ UTS_WINDOW_TITLE = "Unit Trust System"
 _WORKFLOW_LOG_CALLBACK = ContextVar("uts_workflow_log_callback", default=None)
 CUSTOMER_SEGMENT_TARGETS = {
     "CB": "CB",
-    "CUSTOMERBANKING": "CB",
-    "CUSTOMERBANKINGCB": "CB",
+    "CONSUMERBANKING": "CB",
+    "CONSUMERBANKINGCB": "CB",
     "PRIORITY": "PRIORITY",
     "PRIORITYBANKING": "PRIORITY",
     "PRIORITYCUSTOMER": "PRIORITY",
@@ -105,14 +105,14 @@ def normalize(value):
     return str(value or "").strip().upper()
 
 
-def _maker_status(matched_columns):
+def _maker_status(matched_columns, inputs_already_matched=False):
     """Include already-matched maker columns in the workbook result without losing its completion marker."""
+    if inputs_already_matched:
+        return "Done | inputs already matched"
     if not matched_columns:
         return "Done"
-    matched_message = "; ".join(
-        f"{column} value already matched input" for column in matched_columns
-    )
-    return f"Done | {matched_message}"
+    matched_message = ", ".join(matched_columns)
+    return f"Done | {matched_message} already matched"
 
 
 def _is_completed_result(result, completed_result):
@@ -723,7 +723,10 @@ def _customer_segment_target(value):
 
 def _customer_segment_matches(value, target):
     """Match a displayed UTS segment label against its canonical maker target."""
-    return CUSTOMER_SEGMENT_TARGETS.get(_normalize_header(value)) == target
+    segment_value = _normalize_header(value)
+    if segment_value == "CUNSOMERBANKINGCB":
+        return target == "CB"
+    return CUSTOMER_SEGMENT_TARGETS.get(segment_value) == target
 
 
 def _dismiss_customer_maker_search_alert(driver, timeout=0.5):
@@ -828,17 +831,30 @@ def _run_maker_row(driver, values):
     """Process one customer Maker row: find, compare, edit only changed fields, save, and verify."""
     cif, requested_status, requested_branch, requested_officer, requested_segment = values
     _log(None, f"Customer Maker requested values: {values!r}.")
+    segment_out_of_scope = False
+    segment_target = None
     if normalize(requested_segment):
         _log(
             None,
             f"Validating Customer Segment {requested_segment!r} before CIF search.",
         )
-        segment_target = _customer_segment_target(requested_segment)
-        _log(
-            None,
-            f"Customer Segment {requested_segment!r} is accepted as {segment_target}; "
-            "continuing to CIF search.",
-        )
+        try:
+            segment_target = _customer_segment_target(requested_segment)
+        except ValueError as error:
+            if str(error) != "ERROR_segment out of scope":
+                raise
+            segment_out_of_scope = True
+            _log(
+                None,
+                "Customer Segment was not changed because the requested segment "
+                "is out of scope; continuing with other requested fields.",
+            )
+        else:
+            _log(
+                None,
+                f"Customer Segment {requested_segment!r} is accepted as {segment_target}; "
+                "continuing to CIF search.",
+            )
 
     _search_customer_maker(driver, cif)
     current = _read_customer_details(driver)
@@ -846,7 +862,9 @@ def _run_maker_row(driver, values):
         "status": requested_status,
         "branch": requested_branch,
         "officer": requested_officer,
-        "customer_segment": requested_segment,
+        "customer_segment": (
+            None if segment_out_of_scope else requested_segment
+        ),
     }
     column_names = {
         "status": "Change_Status",
@@ -871,9 +889,20 @@ def _run_maker_row(driver, values):
     _log(None, f"Customer Maker fields requiring updates: {updates!r}.")
     for column in matched_columns:
         _log(None, f"{column} value already matched input.")
+    if segment_out_of_scope:
+        _log(
+            None,
+            "customer segment not changed because segment out of scope",
+        )
     if not updates:
         _log(None, "Customer values already match; skipping edit.")
-        return _maker_status(matched_columns)
+        result = _maker_status(
+            matched_columns,
+            inputs_already_matched=bool(matched_columns) and not segment_out_of_scope,
+        )
+        if segment_out_of_scope:
+            result += " | customer segment not changed because segment out of scope"
+        return result
 
     _log(None, "Opening Customer Maker edit form.")
     _click_parent_link(driver, ".td_serach_btn", 0, "Customer Edit")
@@ -965,7 +994,10 @@ def _run_maker_row(driver, values):
             return "Error: cannot save"
         _log(None, f"Verified saved customer {key}: {actual!r}.")
     _log(None, "Customer Maker save action completed and verified.")
-    return _maker_status(matched_columns)
+    result = _maker_status(matched_columns)
+    if segment_out_of_scope:
+        result += " | customer segment not changed because segment out of scope"
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -1023,11 +1055,25 @@ def _read_account_details(driver):
 
 
 def _submit_account_status(driver, status):
-    """Submit one status-dialog choice and handle alerts; _change_account_status calls it for each transition."""
+    """Submit a status-dialog choice, or cancel cleanly when the requested option is unavailable."""
     _log(None, f"Opening account status dialog; requested status={status!r}.")
     modal = _wait_element(driver, By.NAME, "myframe__1")
     driver.switch_to.frame(modal)
     status_select = _wait_element(driver, By.CSS_SELECTOR, "#fmStatus select")
+    select = Select(status_select)
+    matching_options = [
+        option
+        for option in select.options
+        if _status_option_matches(option, status)
+    ]
+    if len(matching_options) != 1:
+        _log(
+            None,
+            f"Account status {status!r} is unavailable or ambiguous in the dialog "
+            f"({len(matching_options)} matching options); cancelling the status change.",
+        )
+        _cancel_account_status_dialog(driver)
+        return False
     _select_account_status_option(driver, status_select, status)
     _log(None, f"Selected account status {status!r}; submitting dialog.")
     try:
@@ -1054,6 +1100,35 @@ def _submit_account_status(driver, status):
     _switch_to_details(driver)
     _wait_element(driver, By.ID, "SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE")
     _log(None, f"Account status change to {status!r} submitted.")
+    return True
+
+
+def _cancel_account_status_dialog(driver):
+    """Close the open account status dialog using Cancel, or Escape when Cancel is absent."""
+    cancel_selector = "#fmStatus .ppw_foot_btn a:nth-child(2)"
+    cancel_buttons = driver.find_elements(By.CSS_SELECTOR, cancel_selector)
+    if cancel_buttons:
+        cancel_button = cancel_buttons[0]
+        if cancel_button.is_displayed() and cancel_button.is_enabled():
+            _log(None, "Cancelling unavailable account status through the dialog Cancel button.")
+            cancel_button.click()
+        else:
+            _log(
+                None,
+                "Account status Cancel button is not available; sending Escape to close the dialog.",
+            )
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+    else:
+        _log(
+            None,
+            "Account status Cancel button was not found; sending Escape to close the dialog.",
+        )
+        ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+
+    driver.switch_to.default_content()
+    _switch_to_details(driver)
+    _wait_element(driver, By.ID, "SPAN_ACCOUNT_DETAIL_CUST_STATUS_CODE")
+    _log(None, "Account status dialog closed without changing status.")
 
 
 def _change_account_status(driver, current_status, requested_status):
@@ -1063,16 +1138,17 @@ def _change_account_status(driver, current_status, requested_status):
         f"Changing account status from {current_status!r} to {requested_status!r}.",
     )
     if (
-        normalize(current_status) == "CLOSED"
+        normalize(current_status) in {"CLOSE", "CLOSED"}
         and normalize(requested_status) == "NORMAL"
     ):
         _log(None, "Account is closed; switching through DMI before reopening.")
         _account_action_link(driver, 2).click()
-        _submit_account_status(driver, "DMI")
+        if not _submit_account_status(driver, "DMI"):
+            return False
         _account_action_link(driver, 3).click()
     else:
         _account_action_link(driver, 2).click()
-    _submit_account_status(driver, requested_status)
+    return _submit_account_status(driver, requested_status)
 
 
 def _run_account_maker_row(driver, values):
@@ -1097,10 +1173,21 @@ def _run_account_maker_row(driver, values):
         _log(None, f"{column} value already matched input.")
     if not updates:
         _log(None, "Account values already match; skipping edit.")
-        return _maker_status(matched_columns)
+        return _maker_status(
+            matched_columns, inputs_already_matched=bool(matched_columns)
+        )
 
     if "status" in updates:
-        _change_account_status(driver, current["status"], updates["status"])
+        status_unavailable = not _change_account_status(
+            driver, current["status"], updates["status"]
+        )
+        if status_unavailable:
+            _log(
+                None,
+                "Change_Status was not changed because the requested status is unavailable.",
+            )
+    else:
+        status_unavailable = False
     if "branch" in updates:
         _log(None, "Opening Account Maker branch edit form.")
         _account_action_link(driver, 0).click()
@@ -1122,7 +1209,10 @@ def _run_account_maker_row(driver, values):
             )
         _log(None, f"Verified saved account branch: {actual_branch!r}.")
         _log(None, "Account Maker branch save action completed.")
-    return _maker_status(matched_columns)
+    result = _maker_status(matched_columns)
+    if status_unavailable:
+        result += " | Change_Status not changed because requested status is unavailable"
+    return result
 
 
 # -----------------------------------------------------------------------------
